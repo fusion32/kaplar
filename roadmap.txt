@@ -1,0 +1,62 @@
+- load .otbm and .otb
+	We're not gonna make any formats yet so we better
+	make a loader for OT formats.
+
+- space partitioning
+	I read the code for a supposedly QUADTREE from OT
+	and TFS and they are really nothing more than a wasteful
+	grid structure. Querying for spectators is probably the
+	main motivator for having a structure like this so for
+	now I'm thinking of keeping a grid structure for the tiles
+	and another structure for creatures like BVH, KD-TREE,
+	or a proper QUADTREE.
+
+- database
+	Last time I spent way too much time reading about
+	databases. In the end, the solution was quite complex
+	because of all the threads and I ended up getting
+	worned out. This time around I'm planning on having
+	a builtin database running whithin the server or
+	alongside in another process.
+
+- networking
+	Last time I also spent way too much time trying to
+	simplify networking code and gluing data from the game
+	and server thread. Since the server is gonna run on
+	Linux, this time I'm thinking of having only two
+	implementations: the main implementation using io_uring
+	on Linux; and another one using poll/WSAPoll on other
+	platforms for testing mostly.
+
+- security
+	I was thinking that for a 8.6 server, RSA with a 1024bit
+	key may not be enough in the following years so, down the
+	line, we should do a tibia client replica that implements
+	maybe a ECDHE algorithm for sending AES or another symmetric
+	encryption key.
+
+- threads
+	We should be ok with a pipeline approach where all work
+	is coordinated by the main thread in small stages throughout
+	a "frame". A network thread would then work on the background
+	accumulating incoming messages up until a sync point with the
+	main thread.
+
+- scripts
+	I didn't even get to this stage last time but thinking now,
+	it is probably better to NOT have scripting and instead have
+	compiled modules that can be loaded/swapped on the fly. We'll
+	analyse more options when we get there but we need to keep in
+	mind that perhaps one of the greater overheads of current OT
+	and TFS is the excess of scripts.
+
+- item/monster data
+	Like scripts, we could have compiled modules with the data for
+	items and monsters. This would instantly throw all or almost all
+	XML parsing code out the window.
+
+- combat system
+	The combat system in OT and TFS is terribly bloated so we should
+	really stick to the simplest design. What comes to my mind right
+	away is that having that BVH structure for creatures, we'll be
+	able to query area effects more effectively.
