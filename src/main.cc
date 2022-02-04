@@ -1,18 +1,13 @@
 #include "common.hh"
 #include "crypto.hh"
-#include "server.hh"
-
-#if 0
-struct Player {
-	i32 health;
-	i32 max_health;
-};
-#endif
+#include "login_server.hh"
 
 struct Game{
 	MemArena *arena;
 	RSA *rsa;
-	Server *server;
+
+	LoginServer *lserver;
+	//GameServer *gserver;
 
 	//Player *players;
 	//NPC *npcs;
@@ -39,27 +34,6 @@ RSA *rsa_default_init(void){
 	if(!rsa_setkey(r, p, q, e))
 		PANIC("failed to set RSA key");
 	return r;
-}
-
-static
-void on_accept(void *userdata, u32 connection){
-	LOG("%08X", connection);
-}
-
-static
-void on_drop(void *userdata, u32 connection){
-	LOG("%08X", connection);
-}
-
-static
-void on_read(void *userdata,
-		u32 connection, u8 *data, i32 datalen){
-	LOG("%08X, datalen = %d", connection, datalen);
-}
-
-static
-void on_write(void *userdata, u32 connection){
-	LOG("%08X", connection);
 }
 
 #if BUILD_DEBUG
@@ -112,11 +86,7 @@ int main(int argc, char **argv){
 	Game *game = arena_alloc<Game>(arena, 1);
 	game->arena = arena;
 	game->rsa = rsa_default_init();
-	game->server = server_init(arena, 7171, 10, 4096);
-	if(!game->server){
-		LOG_ERROR("failed to initialize server");
-		return -1;
-	}
+	game->lserver = login_server_init(arena, 7171, 10);
 
 	while(1){
 // (TODO: Maybe move this to a configuration file?)
@@ -128,11 +98,7 @@ int main(int argc, char **argv){
 		i64 frame_start = kpl_clock_monotonic_msec();
 		i64 next_frame = frame_start + GAME_FRAME_INTERVAL;
 
-		// TODO: Send server accumulated commands to the server here.
-		// That includes sending messages or dropping connections.
-		server_poll(game->server,
-			on_accept, on_drop,
-			on_read, on_write, game);
+		login_server_poll(game->lserver);
 
 		i64 frame_end = kpl_clock_monotonic_msec();
 		if(frame_end < next_frame)

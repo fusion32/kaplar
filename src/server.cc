@@ -93,13 +93,15 @@ void tcp_abort(SOCKET s){
 }
 
 enum{
-	CONNECTION_CLOSED			= 0x01,
-	CONNECTION_READING_LENGTH	= 0x02,
+	CONNECTION_FLAG_CLOSED			= 0x01,
+	CONNECTION_FLAG_CLOSING			= 0x02,
+	CONNECTION_FLAG_READING_LENGTH	= 0x04,
+	CONNECTION_FLAG_WRITING			= 0x08,
 };
 
 static
-u32 make_connection_id(i16 index){
-	return (u32)index;
+u32 make_connection_id(u32 index){
+	return index;
 }
 
 static
@@ -117,11 +119,16 @@ struct Connection{
 	sockaddr_in addr;
 	u32 flags;
 
+	// connection input
 	u8 *readbuf;
 	u16 readbuf_size;
 	u16 readbuf_pos;
 	u16 bytes_to_read;
 	u16 message_length;
+
+	// connection output
+	u8 *write_ptr;
+	i32 bytes_to_write;
 };
 
 struct Server{
@@ -131,10 +138,22 @@ struct Server{
 	i32 freelist_head;
 	WSAPOLLFD *pollfds;
 	Connection *connections;
+	OnConnectionAccept on_accept;
+	OnConnectionDrop on_drop;
+	OnConnectionRead on_read;
+	OnConnectionWrite on_write;
 };
 
-Server *server_init(MemArena *arena, u16 port,
-		u16 max_connections, u16 readbuf_size){
+Server *server_init(MemArena *arena, ServerParams *params){
+	ASSERT(params->on_accept);
+	ASSERT(params->on_drop);
+	ASSERT(params->on_read);
+	ASSERT(params->on_write);
+
+	u16 port = params->port;
+	u16 max_connections = params->max_connections;
+	u16 readbuf_size = params->readbuf_size;
+
 	SOCKET s = server_socket(port);
 	if(s == INVALID_SOCKET)
 		return NULL;
@@ -149,7 +168,7 @@ Server *server_init(MemArena *arena, u16 port,
 	server->connections = arena_alloc<Connection>(arena, max_connections);
 	for(u16 i = 0; i < max_connections; i += 1){
 		server->pollfds[i].fd = INVALID_SOCKET;
-		server->pollfds[i].events = POLLIN;
+		server->pollfds[i].events = POLLIN | POLLOUT;
 
 		Connection *cptr = &server->connections[i];
 		cptr->freelist_next = i + 1;
@@ -159,6 +178,10 @@ Server *server_init(MemArena *arena, u16 port,
 	}
 	server->connections[max_connections - 1].freelist_next = -1;
 
+	server->on_accept = params->on_accept;
+	server->on_drop = params->on_drop;
+	server->on_read = params->on_read;
+	server->on_write = params->on_write;
 	return server;
 }
 
@@ -224,36 +247,39 @@ void server_accept_connections(Server *server,
 		}
 
 		server->pollfds[c].fd = s;
-		server->connections[c].s = s;
-		server->connections[c].addr = addr;
-		server->connections[c].flags = CONNECTION_READING_LENGTH;
-		server->connections[c].readbuf_pos = 0;
-		server->connections[c].bytes_to_read = 2;
 
-		on_accept(userdata, server->connections[c].connection_id);
+		Connection *cptr = &server->connections[c];
+		cptr->s = s;
+		cptr->addr = addr;
+		cptr->flags = CONNECTION_FLAG_READING_LENGTH;
+		cptr->readbuf_pos = 0;
+		cptr->bytes_to_read = 2;
+		cptr->write_ptr = NULL;
+		cptr->bytes_to_write = 0;
+		on_accept(userdata, cptr->connection_id);
 	}
 }
 
 static
 void connection_close(Connection *cptr){
-	if(!(cptr->flags & CONNECTION_CLOSED)){
+	if(!(cptr->flags & CONNECTION_FLAG_CLOSED)){
 		tcp_close(cptr->s);
-		cptr->flags |= CONNECTION_CLOSED;
+		cptr->flags |= CONNECTION_FLAG_CLOSED;
 	}
 }
 
 static
 void connection_abort(Connection *cptr){
-	if(!(cptr->flags & CONNECTION_CLOSED)){
+	if(!(cptr->flags & CONNECTION_FLAG_CLOSED)){
 		tcp_abort(cptr->s);
-		cptr->flags |= CONNECTION_CLOSED;
+		cptr->flags |= CONNECTION_FLAG_CLOSED;
 	}
 }
 
 static
 void connection_resume_reading(Connection *cptr,
 		OnConnectionRead on_read, void *userdata){
-	if(cptr->flags & CONNECTION_CLOSED)
+	if(cptr->flags & CONNECTION_FLAG_CLOSED)
 		return;
 
 	while(1){
@@ -264,7 +290,6 @@ void connection_resume_reading(Connection *cptr,
 				connection_abort(cptr);
 			return;
 		}else if(ret == 0){
-			LOG("connection close on recv 0");
 			connection_close(cptr);
 			return;
 		}
@@ -272,7 +297,7 @@ void connection_resume_reading(Connection *cptr,
 		cptr->readbuf_pos += ret;
 		cptr->bytes_to_read -= ret;
 		if(cptr->bytes_to_read == 0){
-			if(cptr->flags & CONNECTION_READING_LENGTH){
+			if(cptr->flags & CONNECTION_FLAG_READING_LENGTH){
 				i32 message_length = buffer_read_u16_le(cptr->readbuf);
 				if(message_length > cptr->readbuf_size){
 					connection_abort(cptr);
@@ -281,13 +306,13 @@ void connection_resume_reading(Connection *cptr,
 				cptr->readbuf_pos = 2;
 				cptr->bytes_to_read = message_length;
 				cptr->message_length = message_length;
-				cptr->flags &= ~CONNECTION_READING_LENGTH;
+				cptr->flags &= ~CONNECTION_FLAG_READING_LENGTH;
 			}else{
 				on_read(userdata, cptr->connection_id,
 					cptr->readbuf, cptr->message_length);
 				cptr->readbuf_pos = 0;
 				cptr->bytes_to_read = 2;
-				cptr->flags |= CONNECTION_READING_LENGTH;
+				cptr->flags |= CONNECTION_FLAG_READING_LENGTH;
 			}
 		}
 	}
@@ -296,50 +321,96 @@ void connection_resume_reading(Connection *cptr,
 static
 void connection_resume_writing(Connection *cptr,
 		OnConnectionWrite on_write, void *userdata){
-	if(cptr->flags & CONNECTION_CLOSED)
+	if(cptr->flags & CONNECTION_FLAG_CLOSED)
+		return;
+	if(!(cptr->flags & CONNECTION_FLAG_WRITING))
 		return;
 
-	// TODO
+	while(1){
+		if(cptr->bytes_to_write == 0){
+			on_write(userdata, cptr->connection_id,
+				&cptr->write_ptr, &cptr->bytes_to_write);
+			
+			if(cptr->bytes_to_write == 0){
+				cptr->flags &= ~CONNECTION_FLAG_WRITING;
+				return;
+			}
+		}
+
+		int ret = send(cptr->s, (char*)cptr->write_ptr, cptr->bytes_to_write, 0);
+		if(ret == SOCKET_ERROR){
+			if(WSAGetLastError() != WSAEWOULDBLOCK)
+				connection_abort(cptr);
+			return;
+		}
+		cptr->write_ptr += ret;
+		cptr->bytes_to_write -= ret;
+	}
 }
 
-void server_poll(Server *server,
-		OnConnectionAccept on_accept,
-		OnConnectionDrop on_drop,
-		OnConnectionRead on_read,
-		OnConnectionWrite on_write,
-		void *userdata){
+void server_poll(Server *server, void *userdata,
+		u32 *connections_closing, i32 num_connections_closing,
+		u32 *connections_writing, i32 num_connections_writing){
 
-	server_accept_connections(server, on_accept, userdata);
+	for(i32 i = 0; i < num_connections_closing; i += 1){
+		u32 connection = connections_closing[i];
+		u32 index = connection_index(connection);
+		Connection *cptr = &server->connections[index];
+		if(cptr->connection_id != connection)
+			continue;
+		cptr->flags |= CONNECTION_FLAG_CLOSING;
+		LOG("connection closing %08X", connection);
+	}
+
+	for(i32 i = 0; i < num_connections_writing; i += 1){
+		u32 connection = connections_writing[i];
+		u32 index = connection_index(connection);
+		Connection *cptr = &server->connections[index];
+		if(cptr->connection_id != connection)
+			continue;
+		cptr->flags |= CONNECTION_FLAG_WRITING;
+	}
+
+	server_accept_connections(server, server->on_accept, userdata);
 
 	WSAPOLLFD *fds = server->pollfds;
 	int nfds = server->max_connections;
 	int poll_result = WSAPoll(fds, nfds, 0);
-	if(poll_result > 0){
-		for(int i = 0; i < nfds; i += 1){
-			// NOTE: Uhh... When you set fds[i].fd to INVALID_SOCKET
-			// on windows, WSAPoll will set fds[i].revents to POLLNVAL.
-			// Whereas on linux, poll will set fds[i].revents to zero.
+	for(int i = 0; i < nfds; i += 1){
+		// NOTE: Uhh... When you set fds[i].fd to INVALID_SOCKET
+		// on windows, WSAPoll will set fds[i].revents to POLLNVAL.
+		// Whereas on linux, poll will set fds[i].revents to zero.
 
-			if(fds[i].fd == INVALID_SOCKET)
-				continue;
+		if(fds[i].fd == INVALID_SOCKET)
+			continue;
 
-			Connection *cptr = &server->connections[i];
-			if(fds[i].revents){
-				ASSERT(!(fds[i].revents & POLLNVAL));
-				if(fds[i].revents & (POLLHUP | POLLERR)){
-					connection_close(cptr);
-				}else{
-					if(fds[i].revents & POLLIN)
-						connection_resume_reading(cptr, on_read, userdata);
-					if(fds[i].revents & POLLOUT)
-						connection_resume_writing(cptr, on_write, userdata);
-				}
-
-				if(cptr->flags & CONNECTION_CLOSED){
-					on_drop(userdata, cptr->connection_id);
-					server_free_connection(server, i);
-				}
+		Connection *cptr = &server->connections[i];
+		if(fds[i].revents){
+			ASSERT(!(fds[i].revents & POLLNVAL));
+			if(fds[i].revents & (POLLHUP | POLLERR)){
+				connection_close(cptr);
+			}else{
+				if(fds[i].revents & POLLIN)
+					connection_resume_reading(cptr, server->on_read, userdata);
+				if(fds[i].revents & POLLOUT)
+					connection_resume_writing(cptr, server->on_write, userdata);
 			}
+		}
+
+		// NOTE: For closing connections, we want to make
+		// sure we sent all queued output.
+		if((cptr->flags & CONNECTION_FLAG_CLOSING)
+		&& !(cptr->flags & CONNECTION_FLAG_WRITING)){
+			// NOTE: A connection_abort may not be the best
+			// here but we should avoid starting a TCP close
+			// because it may become an attack surface for a
+			// DDOS.
+			connection_abort(cptr);
+		}
+
+		if(cptr->flags & CONNECTION_FLAG_CLOSED){
+			server->on_drop(userdata, cptr->connection_id);
+			server_free_connection(server, i);
 		}
 	}
 }
