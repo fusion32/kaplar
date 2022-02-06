@@ -4,7 +4,6 @@
 
 struct Game{
 	MemArena *arena;
-	RSA *rsa;
 
 	LoginServer *lserver;
 	//GameServer *gserver;
@@ -85,8 +84,10 @@ int main(int argc, char **argv){
 	MemArena *arena = arena_init(mem, mem_size);
 	Game *game = arena_alloc<Game>(arena, 1);
 	game->arena = arena;
-	game->rsa = rsa_default_init();
-	game->lserver = login_server_init(arena, 7171, 10);
+
+	RSA *server_rsa = rsa_default_init();
+	game->lserver = login_server_init(arena, server_rsa, 7171, 10);
+	//game->gserver = game_server_init(arena, server_rsa, 7172, 100);
 
 	while(1){
 // (TODO: Maybe move this to a configuration file?)
@@ -104,7 +105,7 @@ int main(int argc, char **argv){
 		if(frame_end < next_frame)
 			kpl_sleep_msec(next_frame - frame_end);
 
-#if BUILD_DEBUG
+#if 0 && BUILD_DEBUG
 		frame_stats(frame_start, frame_end, next_frame);
 #endif
 	}

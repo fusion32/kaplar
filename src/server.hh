@@ -29,7 +29,6 @@ u32 connection_index(u32 connection_id){
 }
 
 void server_poll(Server *server, void *userdata,
-		u32 *connections_closing, i32 num_connections_closing,
-		u32 *connections_writing, i32 num_connections_writing);
+		u32 *connections_closing, i32 num_connections_closing);
 
 #endif // KAPLAR_SERVER_HH_

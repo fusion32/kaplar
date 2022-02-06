@@ -2,6 +2,40 @@
 #include "buffer_util.hh"
 
 // ----------------------------------------------------------------
+// CHECKSUM - ADLER32
+// ----------------------------------------------------------------
+#define ADLER32_BASE 65521U
+#define ADLER32_NMAX 5552
+
+#define ADLER32_DO1(buf, i)	{a += buf[i]; b += a;}
+#define ADLER32_DO2(buf, i)	ADLER32_DO1(buf,i); ADLER32_DO1(buf,i+1);
+#define ADLER32_DO4(buf, i)	ADLER32_DO2(buf,i); ADLER32_DO2(buf,i+2);
+#define ADLER32_DO8(buf, i)	ADLER32_DO4(buf,i); ADLER32_DO4(buf,i+4);
+#define ADLER32_DO16(buf)	ADLER32_DO8(buf,0); ADLER32_DO8(buf,8);
+
+u32 adler32_accumulate(u32 acc, u8 *data, usize len){
+	u32 a = acc & 0xFFFF;
+	u32 b = (acc >> 16) & 0xFFFF;
+	int k;
+	while(len > 0){
+		k = (int)(len > ADLER32_NMAX ? ADLER32_NMAX : len);
+		len -= k;
+		while(k >= 16){
+			ADLER32_DO16(data);
+			data += 16;
+			k -= 16;
+		}
+		while(k-- != 0){
+			a += *data++;
+			b += a;
+		}
+		a %= ADLER32_BASE;
+		b %= ADLER32_BASE;
+	}
+	return a | (b << 16);
+}
+
+// ----------------------------------------------------------------
 // RSA
 // ----------------------------------------------------------------
 

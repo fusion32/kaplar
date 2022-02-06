@@ -96,7 +96,6 @@ enum{
 	CONNECTION_FLAG_CLOSED			= 0x01,
 	CONNECTION_FLAG_CLOSING			= 0x02,
 	CONNECTION_FLAG_READING_LENGTH	= 0x04,
-	CONNECTION_FLAG_WRITING			= 0x08,
 };
 
 static
@@ -303,7 +302,7 @@ void connection_resume_reading(Connection *cptr,
 					connection_abort(cptr);
 					return;
 				}
-				cptr->readbuf_pos = 2;
+				cptr->readbuf_pos = 0;
 				cptr->bytes_to_read = message_length;
 				cptr->message_length = message_length;
 				cptr->flags &= ~CONNECTION_FLAG_READING_LENGTH;
@@ -323,18 +322,12 @@ void connection_resume_writing(Connection *cptr,
 		OnConnectionWrite on_write, void *userdata){
 	if(cptr->flags & CONNECTION_FLAG_CLOSED)
 		return;
-	if(!(cptr->flags & CONNECTION_FLAG_WRITING))
-		return;
-
 	while(1){
 		if(cptr->bytes_to_write == 0){
 			on_write(userdata, cptr->connection_id,
 				&cptr->write_ptr, &cptr->bytes_to_write);
-			
-			if(cptr->bytes_to_write == 0){
-				cptr->flags &= ~CONNECTION_FLAG_WRITING;
+			if(cptr->bytes_to_write == 0)
 				return;
-			}
 		}
 
 		int ret = send(cptr->s, (char*)cptr->write_ptr, cptr->bytes_to_write, 0);
@@ -349,8 +342,7 @@ void connection_resume_writing(Connection *cptr,
 }
 
 void server_poll(Server *server, void *userdata,
-		u32 *connections_closing, i32 num_connections_closing,
-		u32 *connections_writing, i32 num_connections_writing){
+		u32 *connections_closing, i32 num_connections_closing){
 
 	for(i32 i = 0; i < num_connections_closing; i += 1){
 		u32 connection = connections_closing[i];
@@ -359,23 +351,13 @@ void server_poll(Server *server, void *userdata,
 		if(cptr->connection_id != connection)
 			continue;
 		cptr->flags |= CONNECTION_FLAG_CLOSING;
-		LOG("connection closing %08X", connection);
-	}
-
-	for(i32 i = 0; i < num_connections_writing; i += 1){
-		u32 connection = connections_writing[i];
-		u32 index = connection_index(connection);
-		Connection *cptr = &server->connections[index];
-		if(cptr->connection_id != connection)
-			continue;
-		cptr->flags |= CONNECTION_FLAG_WRITING;
 	}
 
 	server_accept_connections(server, server->on_accept, userdata);
 
 	WSAPOLLFD *fds = server->pollfds;
 	int nfds = server->max_connections;
-	int poll_result = WSAPoll(fds, nfds, 0);
+	WSAPoll(fds, nfds, 0);
 	for(int i = 0; i < nfds; i += 1){
 		// NOTE: Uhh... When you set fds[i].fd to INVALID_SOCKET
 		// on windows, WSAPoll will set fds[i].revents to POLLNVAL.
@@ -397,15 +379,18 @@ void server_poll(Server *server, void *userdata,
 			}
 		}
 
-		// NOTE: For closing connections, we want to make
-		// sure we sent all queued output.
-		if((cptr->flags & CONNECTION_FLAG_CLOSING)
-		&& !(cptr->flags & CONNECTION_FLAG_WRITING)){
-			// NOTE: A connection_abort may not be the best
-			// here but we should avoid starting a TCP close
-			// because it may become an attack surface for a
-			// DDOS.
-			connection_abort(cptr);
+		// TODO: add connection timeout here
+
+		if((cptr->flags & CONNECTION_FLAG_CLOSING) && cptr->bytes_to_write == 0){
+			// TODO: A connection_abort here won't always work because
+			// it will cause packet loss in cases where we write and
+			// disconnect. What can be done instead is to have a delayed
+			// connection_abort. Note that having the server (us) start
+			// a TCP close will lead to sockets sitting in TIME_WAIT for
+			// ~5 mins which could be used for a DDOS attack.
+			//connection_abort(cptr);
+
+			connection_close(cptr);
 		}
 
 		if(cptr->flags & CONNECTION_FLAG_CLOSED){

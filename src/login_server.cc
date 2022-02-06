@@ -1,15 +1,23 @@
 #include "common.hh"
+#include "crypto.hh"
+#include "packet.hh"
 #include "server.hh"
 
+enum LoginState{
+	LOGIN_STATE_WAITING_READ = 0,
+	//TODO: LOGIN_STATE_WAITING_DATABASE,
+	LOGIN_STATE_READY_TO_WRITE,
+	LOGIN_STATE_WAITING_WRITE,
+	LOGIN_STATE_DISCONNECTING,
+};
+
 struct Login{
+	LoginState state;
 	u32 connection;
-	u32 num_reads;
-	u32 num_writes;
-	u32 xtea_key[4];
+	u32 xtea[4];
 	char accname[32];
 	char password[32];
 
-	bool writebuf_inuse;
 	u8 writebuf[512];
 	i32 writelen;
 };
@@ -21,11 +29,8 @@ struct LoginServer{
 
 	i32 max_logins;
 	Login *logins;
+	RSA *rsa;
 	Server *server;
-
-	i32 max_connections_writing;
-	i32 num_connections_writing;
-	u32 *connections_writing;
 
 	i32 max_connections_closing;
 	i32 num_connections_closing;
@@ -33,16 +38,14 @@ struct LoginServer{
 };
 
 static
-Login *login_server_get_connection_login(void *userdata, u32 connection){
-	LoginServer *lserver = (LoginServer*)userdata;
+Login *lserver_login(LoginServer *lserver, u32 connection){
 	i32 index = connection_index(connection);
 	ASSERT(index < lserver->max_logins);
 	return &lserver->logins[index];
 }
 
 static
-void login_server_add_connection_closing(void *userdata, u32 connection){
-	LoginServer *lserver = (LoginServer*)userdata;
+void lserver_connection_closing(LoginServer *lserver, u32 connection){
 	i32 idx = lserver->num_connections_closing;
 	if(idx < lserver->max_connections_closing){
 		lserver->connections_closing[idx] = connection;
@@ -51,120 +54,249 @@ void login_server_add_connection_closing(void *userdata, u32 connection){
 }
 
 static
-void login_server_add_connection_writing(void *userdata, u32 connection){
+void lserver_packet_prepare(Packet *p){
+	// reserve 8 bytes for the header
+	p->bufpos = 8;
+}
+
+static
+void lserver_packet_wrap(Packet *p, u32 *xtea){
+	u8 *buf = packet_buf(p);
+	i32 len = packet_len(p);
+
+	i32 payload_len = len - 8;
+	if(payload_len <= 0)
+		PANIC("trying to send empty message");
+
+	// TODO: We should check for packet_ok after appending the padding bytes.
+
+	// xtea encode
+	u8 *xtea_payload = buf + 6;
+	i32 xtea_payload_len = len - 6;
+	i32 padding = -xtea_payload_len & 7;
+	buffer_write_u16_le(xtea_payload, payload_len);
+	xtea_payload_len += padding;
+	while(padding-- > 0)
+		packet_write_u8(p, 0x33);
+	xtea_encode(xtea, xtea_payload, xtea_payload_len);
+
+	// add message header
+	u32 checksum = adler32(xtea_payload, xtea_payload_len);
+	buffer_write_u16_le(buf, xtea_payload_len + 4);
+	buffer_write_u32_le(buf + 2, checksum);
+}
+
+
+static
+void lserver_disconnect(LoginServer *lserver, Login *login){
+	lserver_connection_closing(lserver, login->connection);
+	login->state = LOGIN_STATE_DISCONNECTING;
+}
+
+static
+void lserver_send_disconnect(LoginServer *lserver, Login *login, const char *message){
+	Packet p = make_packet(login->writebuf, sizeof(login->writebuf));
+	lserver_packet_prepare(&p);
+	packet_write_u8(&p, 0x0A);
+	packet_write_str(&p, message);
+	lserver_packet_wrap(&p, login->xtea);
+	login->state = LOGIN_STATE_READY_TO_WRITE;
+	login->writelen = packet_len(&p);
+}
+
+static
+void lserver_send_charlist(LoginServer *lserver, Login *login){
+	Packet p = make_packet(login->writebuf, sizeof(login->writebuf));
+	lserver_packet_prepare(&p);
+	// motd
+	packet_write_u8(&p, 0x14);
+	packet_write_str(&p, "1\nKaplar!");
+	// charlist
+	packet_write_u8(&p, 0x64);
+	packet_write_u8(&p, 1); // num_characters
+		packet_write_str(&p, "Player");	// player_name
+		packet_write_str(&p, "World");	// world_name
+		packet_write_u32(&p, 16777343); // game_server_addr
+		packet_write_u16(&p, 7172);		// game_server_port
+	packet_write_u16(&p, 1); // premium_days
+	lserver_packet_wrap(&p, login->xtea);
+	login->state = LOGIN_STATE_READY_TO_WRITE;
+	login->writelen = packet_len(&p);
+}
+
+static
+void lserver_on_accept(void *userdata, u32 connection){
+	LOG("%08X", connection);
+
 	LoginServer *lserver = (LoginServer*)userdata;
-	i32 idx = lserver->num_connections_writing;
-	if(idx < lserver->max_connections_writing){
-		lserver->connections_writing[idx] = connection;
-		lserver->num_connections_writing += 1;
-	}
-}
-
-static
-void login_server_accept(void *userdata, u32 connection){
-	LOG("%08X", connection);
-
-	Login *login = login_server_get_connection_login(userdata, connection);
+	Login *login = lserver_login(lserver, connection);
 	login->connection = connection;
-	login->num_reads = 0;
-	login->num_writes = 0;
-	login->writebuf_inuse = false;
+	login->state = LOGIN_STATE_WAITING_READ;
 }
 
 static
-void login_server_drop(void *userdata, u32 connection){
+void lserver_on_drop(void *userdata, u32 connection){
 	LOG("%08X", connection);
 
-	Login *login = login_server_get_connection_login(userdata, connection);
+	LoginServer *lserver = (LoginServer*)userdata;
+	Login *login = lserver_login(lserver, connection);
 	// NOTE: Zero out login memory because it may contain sensible information.
 	memset(login, 0, sizeof(Login));
 }
 
 static
-void login_server_read(void *userdata, u32 connection, u8 *data, i32 datalen){
+void lserver_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 	LOG("%08X", connection);
 
-	Login *login = login_server_get_connection_login(userdata, connection);
-	//if(login->num_reads > 0){
-	//	login_server_add_connection_closing(userdata, connection);
-	//	return;
-	//}
+	LoginServer *lserver = (LoginServer*)userdata;
+	RSA *rsa = lserver->rsa;
+	Login *login = lserver_login(lserver, connection);
 
-	if(login->writebuf_inuse)
+	if(login->state != LOGIN_STATE_WAITING_READ){
+		LOG_ERROR("unexpected message");
+		lserver_disconnect(lserver, login);
 		return;
+	}
 
-	login->writelen = (datalen > sizeof(login->writebuf))
-		? sizeof(login->writebuf) : datalen;
-	memcpy(login->writebuf, data, login->writelen);
+	if(datalen != 149){
+		LOG_ERROR("invalid login message length"
+			" (expected = 149, got = %d)", datalen);
+		lserver_disconnect(lserver, login);
+		return;
+	}
 
-	login_server_add_connection_closing(userdata, connection);
-	login_server_add_connection_writing(userdata, connection);
+	u32 real_checksum = adler32(data + 4, datalen - 4);
+	if(buffer_read_u32_le(data) != real_checksum){
+		LOG_ERROR("invalid login message checksum");
+		lserver_disconnect(lserver, login);
+		return;
+	}
+
+	if(buffer_read_u8(data + 4) != 0x01){
+		LOG_ERROR("invalid login message id");
+		lserver_disconnect(lserver, login);
+		return;
+	}
+
+	//buffer_read_u16_le(data + 5);		// os
+	u16 version = buffer_read_u16_le(data + 7);
+
+	// .DAT .SPR .PIC SIGNATURES (?)
+	//buffer_read_u32_le(data +  9);
+	//buffer_read_u32_le(data + 13);
+	//buffer_read_u32_le(data + 17);
+
+
+	// NOTE: RSA DECODE the remaining 128 bytes. This can only fail if
+	// the result contains more than 128 bytes which is impossible if
+	// the key has 1024 bits but is always good to calm your paranoid
+	// side and in case you derived a bad key unknowingly.
+	u8 *decoded = data + 21;
+	usize decoded_len = 128;
+	if(!rsa_decode(rsa, decoded, &decoded_len, 128)){
+		PANIC("RSA DECODE step produced a bad result. This is only"
+			" possible if the RSA key has more than 1024 bits.");
+	}
+
+	if(decoded_len != 127){
+		LOG_ERROR("RSA DECODE invalid message");
+		lserver_disconnect(lserver, login);
+		return;
+	}
+
+	Packet p = make_packet(decoded, 127);
+	login->xtea[0] = packet_read_u32(&p);
+	login->xtea[1] = packet_read_u32(&p);
+	login->xtea[2] = packet_read_u32(&p);
+	login->xtea[3] = packet_read_u32(&p);
+
+	if(version != 860){
+		lserver_send_disconnect(lserver, login,
+			"This server requires client version 8.60.");
+		return;
+	}
+
+	packet_read_string(&p, sizeof(login->accname), login->accname);
+	packet_read_string(&p, sizeof(login->password), login->password);
+
+	LOG("account_login");
+	LOG("xtea = {%08X, %08X, %08X, %08X}",
+		login->xtea[0], login->xtea[1],
+		login->xtea[2], login->xtea[3]);
+	LOG("accname = \"%s\", password = \"%s\"",
+		login->accname, login->password);
+
+	if(strcmp(login->accname, "account") == 0){
+		lserver_send_charlist(lserver, login);
+	}else{
+		lserver_send_disconnect(lserver, login,
+			"Invalid account name or password.");
+	}
+
+	LOG("OK");
+	return;
 }
 
 static
-void login_server_write(void *userdata, u32 connection, u8 **out_write_ptr, i32 *out_write_len){
+void lserver_on_write(void *userdata, u32 connection, u8 **out_write_ptr, i32 *out_write_len){
 	LOG("%08X", connection);
 
-	Login *login = login_server_get_connection_login(userdata, connection);
-	//if(login->num_writes > 0){
-	//	login_server_add_connection_closing(userdata, connection);
-	//	return;
-	//}
-
-	if(login->writelen > 0){
-		if(!login->writebuf_inuse){
-			*out_write_ptr = login->writebuf;
-			*out_write_len = login->writelen;
-			login->writebuf_inuse = true;
-		}else{
-			login->writebuf_inuse = false;
-			login->writelen = 0;
-		}
+	LoginServer *lserver = (LoginServer*)userdata;
+	Login *login = lserver_login(lserver, connection);
+	if(login->state == LOGIN_STATE_READY_TO_WRITE){
+		*out_write_ptr = login->writebuf;
+		*out_write_len = login->writelen;
+		login->state = LOGIN_STATE_WAITING_WRITE;
+		LOG("writing: %d", login->writelen);
+	}else if(login->state == LOGIN_STATE_WAITING_WRITE){
+		login->state = LOGIN_STATE_DISCONNECTING;
+		lserver_connection_closing(lserver, connection);
 	}
 }
 
-LoginServer *login_server_init(MemArena *arena, u16 port, u16 max_connections){
+// ----------------------------------------------------------------
+
+LoginServer *login_server_init(MemArena *arena,
+		RSA *server_rsa, u16 port, u16 max_connections){
 	LoginServer *lserver = arena_alloc<LoginServer>(arena, 1);
 	lserver->max_logins = max_connections;
 	lserver->logins = arena_alloc<Login>(arena, max_connections);
+	lserver->rsa = server_rsa;
 
 	ServerParams server_params;
 	server_params.port = port;
 	server_params.max_connections = max_connections;
 	server_params.readbuf_size = 256;
-	server_params.on_accept = login_server_accept;
-	server_params.on_drop = login_server_drop;
-	server_params.on_read = login_server_read;
-	server_params.on_write = login_server_write;
+	server_params.on_accept = lserver_on_accept;
+	server_params.on_drop = lserver_on_drop;
+	server_params.on_read = lserver_on_read;
+	server_params.on_write = lserver_on_write;
 	lserver->server = server_init(arena, &server_params);
 	if(!lserver->server)
 		PANIC("failed to initialize login server");
 
-	i32 max_updates = 4 * (i32)max_connections;
-
-	lserver->max_connections_closing = max_updates;
+	// NOTE: Leave enough room for duplicates.
+	i32 max_connections_closing = 2 * (i32)max_connections;
+	lserver->max_connections_closing = max_connections_closing;
 	lserver->num_connections_closing = 0;
-	lserver->connections_closing = arena_alloc<u32>(arena, max_updates);
-
-	lserver->max_connections_writing = max_updates;
-	lserver->num_connections_writing = 0;
-	lserver->connections_writing = arena_alloc<u32>(arena, max_updates);
-
+	lserver->connections_closing = arena_alloc<u32>(arena, max_connections_closing);
 	return lserver;
 }
 
-static int cmp_connections(const void *a, const void *b){
-	return (i32)connection_index(*(u32*)a) - (i32)connection_index(*(u32*)b);
-}
-static void sort_connections(u32 *connections, i32 num_connections){
-	qsort(connections, num_connections, sizeof(u32), cmp_connections);
-}
-
 void login_server_poll(LoginServer *lserver){
+	// NOTE: Because the server processes the connections in order,
+	// this array should already be sorted by connection_index but
+	// may contain duplicates.
 	i32 num_connections_closing = lserver->num_connections_closing;
 	u32 *connections_closing = lserver->connections_closing;
 	if(num_connections_closing > 0){
-		sort_connections(connections_closing, num_connections_closing);
+#if BUILD_DEBUG
+		for(i32 i = 1; i < num_connections_closing; i += 1){
+			u32 prev = connection_index(connections_closing[i - 1]);
+			u32 cur = connection_index(connections_closing[i]);
+			ASSERT(prev <= cur);
+		}
+#endif
 		i32 j = 1;
 		for(i32 i = 1; i < num_connections_closing; i += 1){
 			if(connections_closing[i] != connections_closing[i - 1])
@@ -173,23 +305,9 @@ void login_server_poll(LoginServer *lserver){
 		num_connections_closing = j;
 	}
 
-	i32 num_connections_writing = lserver->num_connections_writing;
-	u32 *connections_writing = lserver->connections_writing;
-	if(num_connections_writing > 0){
-		sort_connections(connections_writing, num_connections_writing);
-		i32 j = 1;
-		for(i32 i = 1; i < num_connections_writing; i += 1){
-			if(connections_writing[i] != connections_writing[i - 1])
-				connections_writing[j++] = connections_writing[i];
-		}
-		num_connections_writing = j;
-	}
-
 	// NOTE: Reset these before hand. Server callbacks will fill them back up.
 	lserver->num_connections_closing = 0;
-	lserver->num_connections_writing = 0;
 
 	server_poll(lserver->server, lserver,
-		connections_closing, num_connections_closing,
-		connections_writing, num_connections_writing);
+		connections_closing, num_connections_closing);
 }
