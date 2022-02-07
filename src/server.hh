@@ -8,6 +8,13 @@ typedef void (*OnConnectionDrop)(void *userdata, u32 connection);
 typedef void (*OnConnectionRead)(void *userdata, u32 connection, u8 *data, i32 datalen);
 typedef void (*OnConnectionWrite)(void *userdata, u32 connection, u8 **out_data, i32 *out_datalen);
 
+// TODO: Set the top bits of the connection id in a way
+// to differentiate connections from different servers.
+// For example:
+//	login server:	0b00...    0b000...
+//	game server:	0b01... or 0b001...
+//	info server:	0b10...    0b010...
+
 struct ServerParams{
 	u16 port;
 	u16 max_connections;

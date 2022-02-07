@@ -1,12 +1,13 @@
 #include "common.hh"
 #include "crypto.hh"
 #include "login_server.hh"
+#include "game_server.hh"
 
 struct Game{
 	MemArena *arena;
 
 	LoginServer *lserver;
-	//GameServer *gserver;
+	GameServer *gserver;
 
 	//Player *players;
 	//NPC *npcs;
@@ -78,7 +79,7 @@ void frame_stats(i64 frame_start, i64 frame_end, i64 next_frame){
 int main(int argc, char **argv){
 	// TODO: Should we use a growing arena or have these values
 	// configurable via cmdline or a configuration file?
-	usize mem_size = 0x00100000;
+	usize mem_size = 0x01000000; // ~16MB
 	void *mem = kpl_alloc(mem_size);
 
 	MemArena *arena = arena_init(mem, mem_size);
@@ -87,7 +88,7 @@ int main(int argc, char **argv){
 
 	RSA *server_rsa = rsa_default_init();
 	game->lserver = login_server_init(arena, server_rsa, 7171, 10);
-	//game->gserver = game_server_init(arena, server_rsa, 7172, 100);
+	game->gserver = game_server_init(arena, server_rsa, 7172, 100);
 
 	while(1){
 // (TODO: Maybe move this to a configuration file?)
@@ -100,6 +101,7 @@ int main(int argc, char **argv){
 		i64 next_frame = frame_start + GAME_FRAME_INTERVAL;
 
 		login_server_poll(game->lserver);
+		game_server_poll(game->gserver);
 
 		i64 frame_end = kpl_clock_monotonic_msec();
 		if(frame_end < next_frame)

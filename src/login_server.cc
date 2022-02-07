@@ -1,9 +1,11 @@
+#include "login_server.hh"
+
 #include "common.hh"
 #include "crypto.hh"
 #include "packet.hh"
 #include "server.hh"
 
-enum LoginState{
+enum LoginState : u32 {
 	LOGIN_STATE_WAITING_READ = 0,
 	//TODO: LOGIN_STATE_WAITING_DATABASE,
 	LOGIN_STATE_READY_TO_WRITE,
@@ -38,76 +40,83 @@ struct LoginServer{
 };
 
 static
-Login *lserver_login(LoginServer *lserver, u32 connection){
-	i32 index = connection_index(connection);
-	ASSERT(index < lserver->max_logins);
+Login *get_connection_login(LoginServer *lserver, u32 connection){
+	u32 index = connection_index(connection);
+	ASSERT(index < (u32)lserver->max_logins);
 	return &lserver->logins[index];
 }
 
 static
-void lserver_connection_closing(LoginServer *lserver, u32 connection){
-	i32 idx = lserver->num_connections_closing;
-	if(idx < lserver->max_connections_closing){
-		lserver->connections_closing[idx] = connection;
-		lserver->num_connections_closing += 1;
-	}
-}
-
-static
-void lserver_packet_prepare(Packet *p){
+Packet packet_prepare(Login *login){
+	Packet result;
+	result.buf = login->writebuf;
+	result.bufend = sizeof(login->writebuf);
 	// reserve 8 bytes for the header
-	p->bufpos = 8;
+	result.bufpos = 8;
+	return result;
 }
 
 static
-void lserver_packet_wrap(Packet *p, u32 *xtea){
+bool packet_wrap(Packet *p, u32 *xtea){
 	u8 *buf = packet_buf(p);
-	i32 len = packet_len(p);
+	i32 len = packet_written_len(p);
 
 	i32 payload_len = len - 8;
-	if(payload_len <= 0)
+	if(payload_len <= 0) // PARANOID
 		PANIC("trying to send empty message");
-
-	// TODO: We should check for packet_ok after appending the padding bytes.
 
 	// xtea encode
 	u8 *xtea_payload = buf + 6;
 	i32 xtea_payload_len = len - 6;
 	i32 padding = -xtea_payload_len & 7;
+	// NOTE: If padding ends up being zero, packet_can_write(p, 0)
+	// is the same as packet_ok(p).
+	if(!packet_can_write(p, padding))
+		return false;
 	buffer_write_u16_le(xtea_payload, payload_len);
 	xtea_payload_len += padding;
 	while(padding-- > 0)
 		packet_write_u8(p, 0x33);
 	xtea_encode(xtea, xtea_payload, xtea_payload_len);
 
-	// add message header
+	// add message length and checksum
 	u32 checksum = adler32(xtea_payload, xtea_payload_len);
 	buffer_write_u16_le(buf, xtea_payload_len + 4);
 	buffer_write_u32_le(buf + 2, checksum);
+	return true;
 }
 
 
 static
-void lserver_disconnect(LoginServer *lserver, Login *login){
-	lserver_connection_closing(lserver, login->connection);
+void disconnect(LoginServer *lserver, Login *login){
+	if(login->state == LOGIN_STATE_DISCONNECTING)
+		return;
+
+	i32 i = lserver->num_connections_closing;
+	if(i < lserver->max_connections_closing){
+		lserver->connections_closing[i] = login->connection;
+		lserver->num_connections_closing += 1;
+	}
 	login->state = LOGIN_STATE_DISCONNECTING;
 }
 
 static
-void lserver_send_disconnect(LoginServer *lserver, Login *login, const char *message){
-	Packet p = make_packet(login->writebuf, sizeof(login->writebuf));
-	lserver_packet_prepare(&p);
+void send_disconnect(LoginServer *lserver, Login *login, const char *message){
+	Packet p = packet_prepare(login);
 	packet_write_u8(&p, 0x0A);
 	packet_write_str(&p, message);
-	lserver_packet_wrap(&p, login->xtea);
-	login->state = LOGIN_STATE_READY_TO_WRITE;
-	login->writelen = packet_len(&p);
+
+	if(packet_wrap(&p, login->xtea)){
+		login->writelen = packet_written_len(&p);
+		login->state = LOGIN_STATE_READY_TO_WRITE;
+	}else{
+		disconnect(lserver, login);
+	}
 }
 
 static
-void lserver_send_charlist(LoginServer *lserver, Login *login){
-	Packet p = make_packet(login->writebuf, sizeof(login->writebuf));
-	lserver_packet_prepare(&p);
+void send_charlist(LoginServer *lserver, Login *login){
+	Packet p = packet_prepare(login);
 	// motd
 	packet_write_u8(&p, 0x14);
 	packet_write_str(&p, "1\nKaplar!");
@@ -119,62 +128,66 @@ void lserver_send_charlist(LoginServer *lserver, Login *login){
 		packet_write_u32(&p, 16777343); // game_server_addr
 		packet_write_u16(&p, 7172);		// game_server_port
 	packet_write_u16(&p, 1); // premium_days
-	lserver_packet_wrap(&p, login->xtea);
-	login->state = LOGIN_STATE_READY_TO_WRITE;
-	login->writelen = packet_len(&p);
+
+	if(packet_wrap(&p, login->xtea)){
+		login->writelen = packet_written_len(&p);
+		login->state = LOGIN_STATE_READY_TO_WRITE;
+	}else{
+		disconnect(lserver, login);
+	}
 }
 
 static
-void lserver_on_accept(void *userdata, u32 connection){
+void login_server_on_accept(void *userdata, u32 connection){
 	LOG("%08X", connection);
 
 	LoginServer *lserver = (LoginServer*)userdata;
-	Login *login = lserver_login(lserver, connection);
-	login->connection = connection;
+	Login *login = get_connection_login(lserver, connection);
 	login->state = LOGIN_STATE_WAITING_READ;
+	login->connection = connection;
 }
 
 static
-void lserver_on_drop(void *userdata, u32 connection){
+void login_server_on_drop(void *userdata, u32 connection){
 	LOG("%08X", connection);
 
 	LoginServer *lserver = (LoginServer*)userdata;
-	Login *login = lserver_login(lserver, connection);
+	Login *login = get_connection_login(lserver, connection);
 	// NOTE: Zero out login memory because it may contain sensible information.
 	memset(login, 0, sizeof(Login));
 }
 
 static
-void lserver_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
+void login_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 	LOG("%08X", connection);
 
 	LoginServer *lserver = (LoginServer*)userdata;
 	RSA *rsa = lserver->rsa;
-	Login *login = lserver_login(lserver, connection);
+	Login *login = get_connection_login(lserver, connection);
 
 	if(login->state != LOGIN_STATE_WAITING_READ){
 		LOG_ERROR("unexpected message");
-		lserver_disconnect(lserver, login);
+		disconnect(lserver, login);
 		return;
 	}
 
 	if(datalen != 149){
 		LOG_ERROR("invalid login message length"
 			" (expected = 149, got = %d)", datalen);
-		lserver_disconnect(lserver, login);
+		disconnect(lserver, login);
 		return;
 	}
 
-	u32 real_checksum = adler32(data + 4, datalen - 4);
-	if(buffer_read_u32_le(data) != real_checksum){
+	u32 checksum = adler32(data + 4, datalen - 4);
+	if(buffer_read_u32_le(data) != checksum){
 		LOG_ERROR("invalid login message checksum");
-		lserver_disconnect(lserver, login);
+		disconnect(lserver, login);
 		return;
 	}
 
 	if(buffer_read_u8(data + 4) != 0x01){
 		LOG_ERROR("invalid login message id");
-		lserver_disconnect(lserver, login);
+		disconnect(lserver, login);
 		return;
 	}
 
@@ -197,10 +210,9 @@ void lserver_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 		PANIC("RSA DECODE step produced a bad result. This is only"
 			" possible if the RSA key has more than 1024 bits.");
 	}
-
 	if(decoded_len != 127){
 		LOG_ERROR("RSA DECODE invalid message");
-		lserver_disconnect(lserver, login);
+		disconnect(lserver, login);
 		return;
 	}
 
@@ -211,7 +223,7 @@ void lserver_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 	login->xtea[3] = packet_read_u32(&p);
 
 	if(version != 860){
-		lserver_send_disconnect(lserver, login,
+		send_disconnect(lserver, login,
 			"This server requires client version 8.60.");
 		return;
 	}
@@ -227,30 +239,26 @@ void lserver_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 		login->accname, login->password);
 
 	if(strcmp(login->accname, "account") == 0){
-		lserver_send_charlist(lserver, login);
+		send_charlist(lserver, login);
 	}else{
-		lserver_send_disconnect(lserver, login,
+		send_disconnect(lserver, login,
 			"Invalid account name or password.");
 	}
-
-	LOG("OK");
-	return;
 }
 
 static
-void lserver_on_write(void *userdata, u32 connection, u8 **out_write_ptr, i32 *out_write_len){
+void login_server_on_write(void *userdata, u32 connection, u8 **out_write_ptr, i32 *out_write_len){
 	LOG("%08X", connection);
 
 	LoginServer *lserver = (LoginServer*)userdata;
-	Login *login = lserver_login(lserver, connection);
+	Login *login = get_connection_login(lserver, connection);
 	if(login->state == LOGIN_STATE_READY_TO_WRITE){
 		*out_write_ptr = login->writebuf;
 		*out_write_len = login->writelen;
 		login->state = LOGIN_STATE_WAITING_WRITE;
 		LOG("writing: %d", login->writelen);
 	}else if(login->state == LOGIN_STATE_WAITING_WRITE){
-		login->state = LOGIN_STATE_DISCONNECTING;
-		lserver_connection_closing(lserver, connection);
+		disconnect(lserver, login);
 	}
 }
 
@@ -267,10 +275,10 @@ LoginServer *login_server_init(MemArena *arena,
 	server_params.port = port;
 	server_params.max_connections = max_connections;
 	server_params.readbuf_size = 256;
-	server_params.on_accept = lserver_on_accept;
-	server_params.on_drop = lserver_on_drop;
-	server_params.on_read = lserver_on_read;
-	server_params.on_write = lserver_on_write;
+	server_params.on_accept = login_server_on_accept;
+	server_params.on_drop = login_server_on_drop;
+	server_params.on_read = login_server_on_read;
+	server_params.on_write = login_server_on_write;
 	lserver->server = server_init(arena, &server_params);
 	if(!lserver->server)
 		PANIC("failed to initialize login server");

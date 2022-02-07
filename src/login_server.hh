@@ -3,6 +3,7 @@
 
 #include "common.hh"
 
+struct RSA;
 struct LoginServer;
 LoginServer *login_server_init(MemArena *arena,
 		RSA *server_rsa, u16 port, u16 max_connections);
