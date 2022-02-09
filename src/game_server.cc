@@ -47,9 +47,12 @@ struct Client{
 	// to handle every case but we will need statistics
 	// of a running server to be 100% sure.
 
-	bool writing;
-	u8 writebuf[32 * 1024];
-	i32 writelen;
+	Packet *output;
+	u32 max_output;
+	u32 output_mask;
+	u32 output_head;
+	u32 output_tail;
+	u32 output_next;
 };
 
 struct GameServer{
@@ -70,14 +73,28 @@ Client *get_connection_client(GameServer *gserver, u32 connection){
 	return &gserver->clients[index];
 }
 
-static
-Packet packet_prepare(Client *client){
-	Packet result;
-	result.buf = client->writebuf;
-	result.bufend = sizeof(client->writebuf);
-	// reserve 8 bytes for the header
-	result.bufpos = 8;
-	return result;
+Packet *get_packet(Client *client, u32 size){
+	u32 max_output = client->max_output;
+	u32 output_mask = client->output_mask;
+
+	if(client->output_next != client->output_tail){
+		u32 cur_output = client->output_tail - 1;
+		Packet *outp = &client->output[cur_output & output_mask];
+		// NOTE: If the writer doesn't surpass size bytes, size + 7
+		// will be enough for any packet_wrap padding.
+		if(size > 0 && packet_can_write(outp, size + 7))
+			return outp;
+	}
+
+	// TODO: This cannot happen if we have the right amount of
+	// buffers with the right sizes.
+	if((client->output_tail - client->output_head) > max_output)
+		return NULL;
+
+	Packet *outp = &client->output[client->output_tail & output_mask];
+	client->output_tail += 1;
+	outp->bufpos = 8; // reserve 8 bytes for the header
+	return outp;
 }
 
 static
@@ -112,8 +129,12 @@ bool packet_wrap(Packet *p, u32 *xtea){
 
 static
 bool packet_unwrap(u8 *buf, i32 len, u32 *xtea, Packet *outp){
-	// NOTE: We need at least 4 bytes for the checksum and 8 bytes for
-	// the smallest XTEA encoded message.
+	// NOTE: Different from wrapping a packet, the message length
+	// shouldn't be considered as it is discarded earlier when
+	// reading from the socket.
+
+	// NOTE: We need at least 4 bytes for the checksum and 8 bytes
+	// for the smallest XTEA encoded message.
 	if(len < 12)
 		return false;
 
@@ -160,143 +181,132 @@ void disconnect(GameServer *gserver, Client *client){
 
 static
 void send_disconnect(GameServer *gserver, Client *client, const char *message){
-	Packet p = packet_prepare(client);
-	packet_write_u8(&p, 0x14);
-	packet_write_str(&p, message);
-	if(packet_wrap(&p, client->xtea)){
-		client->writelen = packet_written_len(&p);
-		client->state = CLIENT_STATE_DISCONNECT_WRITING;
-	}else{
-		disconnect(gserver, client);
-	}
+	client->state = CLIENT_STATE_DISCONNECT_WRITING;
+
+	Packet *p = get_packet(client, 256);
+	packet_write_u8(p, 0x14);
+	packet_write_str(p, message);
 }
 
 static
 void send_login(GameServer *gserver, Client *client){
-	Packet p = packet_prepare(client);
+	client->state = CLIENT_STATE_NORMAL;
+
+	Packet *p = get_packet(client, 0);
 
 	// NOTE: The comments on the side are old annotations from another
 	// implementation I did that I didn't check. So they may/will be wrong.
 
 	// login message
 	u32 player_id = 0x10000000;
-	packet_write_u8(&p, 0x0A);
-	packet_write_u32(&p, player_id);			// creature id (?)
-	packet_write_u16(&p, 0x0032);				// related to client drawing speed
-	packet_write_u8(&p, 0x00);					// can report bugs
+	packet_write_u8(p, 0x0A);
+	packet_write_u32(p, player_id);			// creature id (?)
+	packet_write_u16(p, 0x0032);				// related to client drawing speed
+	packet_write_u8(p, 0x00);					// can report bugs
 
 	// map description
-	packet_write_u8(&p, 0x64);
-	packet_write_u16(&p, 100);					// posx
-	packet_write_u16(&p, 100);					// posy
-	packet_write_u8(&p, 7);						// posz
+	packet_write_u8(p, 0x64);
+	packet_write_u16(p, 100);					// posx
+	packet_write_u16(p, 100);					// posy
+	packet_write_u8(p, 7);						// posz
 
 	for(i32 z = 7; z >= 0; z -= 1)
 	for(i32 x = 0; x < 18; x += 1)
 	for(i32 y = 0; y < 14; y += 1){
-		packet_write_u16(&p, 106);				// grass tile
+		packet_write_u16(p, 106);				// grass tile
 		// add player at the center
 		if(x == 8 && y == 6 && z == 7){
-			packet_write_u16(&p, 0x61);
+			packet_write_u16(p, 0x61);
 
-			packet_write_u32(&p, 0);			// remove known
-			packet_write_u32(&p, player_id);	// creature id (?)
+			packet_write_u32(p, 0);			// remove known
+			packet_write_u32(p, player_id);	// creature id (?)
 
-			packet_write_str(&p, client->character);	// creature name
-			packet_write_u8(&p, 100);			// health %
-			packet_write_u8(&p, 2);				// direction
+			packet_write_str(p, client->character);	// creature name
+			packet_write_u8(p, 100);			// health %
+			packet_write_u8(p, 2);				// direction
 
-			packet_write_u16(&p, 136);			// outfit
-			packet_write_u8(&p, 10);			// look head
-			packet_write_u8(&p, 10);			// look body
-			packet_write_u8(&p, 10);			// look legs
-			packet_write_u8(&p, 10);			// look feet
-			packet_write_u8(&p, 0);				// look addons
+			packet_write_u16(p, 136);			// outfit
+			packet_write_u8(p, 10);			// look head
+			packet_write_u8(p, 10);			// look body
+			packet_write_u8(p, 10);			// look legs
+			packet_write_u8(p, 10);			// look feet
+			packet_write_u8(p, 0);				// look addons
 
-			packet_write_u8(&p, 0);				// light level
-			packet_write_u8(&p, 0);				// light color
-			packet_write_u16(&p, 100);			// step speed
-			packet_write_u8(&p, 3);				// skull
-			packet_write_u8(&p, 3);				// party shield
-			packet_write_u8(&p, 1);				// war emblem
-			packet_write_u8(&p, 1);				// will block path
+			packet_write_u8(p, 0);				// light level
+			packet_write_u8(p, 0);				// light color
+			packet_write_u16(p, 100);			// step speed
+			packet_write_u8(p, 3);				// skull
+			packet_write_u8(p, 3);				// party shield
+			packet_write_u8(p, 1);				// war emblem
+			packet_write_u8(p, 1);				// will block path
 		}
-		packet_write_u16(&p, 0xFF00);
+		packet_write_u16(p, 0xFF00);
 	}
 
 	// inventory (no items)
-	packet_write_u16(&p, 0x0179);				// head
-	packet_write_u16(&p, 0x0279);				// neck
-	packet_write_u16(&p, 0x0379);				// backpack
-	packet_write_u16(&p, 0x0479);				// armor
-	packet_write_u16(&p, 0x0579);				// right (?)
-	packet_write_u16(&p, 0x0679);				// left (?)
-	packet_write_u16(&p, 0x0779);				// legs
-	packet_write_u16(&p, 0x0879);				// feet
-	packet_write_u16(&p, 0x0979);				// ring
-	packet_write_u16(&p, 0x0A79);				// ammo
+	packet_write_u16(p, 0x0179);				// head
+	packet_write_u16(p, 0x0279);				// neck
+	packet_write_u16(p, 0x0379);				// backpack
+	packet_write_u16(p, 0x0479);				// armor
+	packet_write_u16(p, 0x0579);				// right (?)
+	packet_write_u16(p, 0x0679);				// left (?)
+	packet_write_u16(p, 0x0779);				// legs
+	packet_write_u16(p, 0x0879);				// feet
+	packet_write_u16(p, 0x0979);				// ring
+	packet_write_u16(p, 0x0A79);				// ammo
 
 	// stats
-	packet_write_u8(&p, 0xA0);
-	packet_write_u16(&p, 125);					// health
-	packet_write_u16(&p, 150);					// maxhealth
-	packet_write_u32(&p, 100 * 100);			// free capacity
-	packet_write_u32(&p, 155);					// experience
-	packet_write_u16(&p, 15);					// level
-	packet_write_u8(&p, 50);					// level %
-	packet_write_u16(&p, 123);					// mana
-	packet_write_u16(&p, 321);					// maxmana
-	packet_write_u8(&p, 25);					// magic level
-	packet_write_u8(&p, 75);					// magic level %
-	packet_write_u8(&p, 97);					// soul
-	packet_write_u16(&p, 61);					// stamina (minutes)
+	packet_write_u8(p, 0xA0);
+	packet_write_u16(p, 125);					// health
+	packet_write_u16(p, 150);					// maxhealth
+	packet_write_u32(p, 100 * 100);			// free capacity
+	packet_write_u32(p, 155);					// experience
+	packet_write_u16(p, 15);					// level
+	packet_write_u8(p, 50);					// level %
+	packet_write_u16(p, 123);					// mana
+	packet_write_u16(p, 321);					// maxmana
+	packet_write_u8(p, 25);					// magic level
+	packet_write_u8(p, 75);					// magic level %
+	packet_write_u8(p, 97);					// soul
+	packet_write_u16(p, 61);					// stamina (minutes)
 
 	// skills
-	packet_write_u8(&p, 0xA1);
-	packet_write_u8(&p, 11);					// fist level
-	packet_write_u8(&p, 90);					// fist level %
-	packet_write_u8(&p, 12);					// club level
-	packet_write_u8(&p, 80);					// club level %
-	packet_write_u8(&p, 13);					// sword level
-	packet_write_u8(&p, 70);					// sword level %
-	packet_write_u8(&p, 14);					// axe level
-	packet_write_u8(&p, 60);					// axe level %
-	packet_write_u8(&p, 15);					// dist level
-	packet_write_u8(&p, 50);					// dist level %
-	packet_write_u8(&p, 16);					// shield level
-	packet_write_u8(&p, 40);					// shield level %
-	packet_write_u8(&p, 17);					// fish level
-	packet_write_u8(&p, 30);					// fish level %
+	packet_write_u8(p, 0xA1);
+	packet_write_u8(p, 11);					// fist level
+	packet_write_u8(p, 90);					// fist level %
+	packet_write_u8(p, 12);					// club level
+	packet_write_u8(p, 80);					// club level %
+	packet_write_u8(p, 13);					// sword level
+	packet_write_u8(p, 70);					// sword level %
+	packet_write_u8(p, 14);					// axe level
+	packet_write_u8(p, 60);					// axe level %
+	packet_write_u8(p, 15);					// dist level
+	packet_write_u8(p, 50);					// dist level %
+	packet_write_u8(p, 16);					// shield level
+	packet_write_u8(p, 40);					// shield level %
+	packet_write_u8(p, 17);					// fish level
+	packet_write_u8(p, 30);					// fish level %
 
 	// world light
-	packet_write_u8(&p, 0x82);
-	packet_write_u8(&p, 250);					// level
-	packet_write_u8(&p, 0xD7);					// color
+	packet_write_u8(p, 0x82);
+	packet_write_u8(p, 250);					// level
+	packet_write_u8(p, 0xD7);					// color
 
 	// creature light
-	//packet_write_u8(&p, 0x8D);
-	//packet_write_u32(&p, player_id);			// creature id (?)
-	//packet_write_u8(&p, 0);					// level
-	//packet_write_u8(&p, 0);					// color
+	//packet_write_u8(p, 0x8D);
+	//packet_write_u32(p, player_id);			// creature id (?)
+	//packet_write_u8(p, 0);					// level
+	//packet_write_u8(p, 0);					// color
 
 	// vip list
-	//packet_write_u8(&p, 0xD2);
-	//packet_write_u32(&p, 0xFFFF0001);			// creature id (?)
-	//packet_write_str(&p, "Friend");			// name
-	//packet_write_u8(&p, 0);					// online
+	//packet_write_u8(p, 0xD2);
+	//packet_write_u32(p, 0xFFFF0001);			// creature id (?)
+	//packet_write_str(p, "Friend");			// name
+	//packet_write_u8(p, 0);					// online
 
 	// icons
-	//packet_write_u8(&p, 0xA2);
-	//packet_write_u16(&p, 0);
-
-
-
-	if(packet_wrap(&p, client->xtea)){
-		client->writelen = packet_written_len(&p);
-		client->state = CLIENT_STATE_NORMAL;
-	}else{
-		disconnect(gserver, client);
-	}
+	//packet_write_u8(p, 0xA2);
+	//packet_write_u16(p, 0);
 }
 
 static
@@ -306,6 +316,9 @@ void game_server_on_accept(void *userdata, u32 connection){
 	Client *client = get_connection_client(gserver, connection);
 	client->state = CLIENT_STATE_HANDSHAKE_WRITING;
 	client->connection = connection;
+	client->output_head = 0;
+	client->output_tail = 0;
+	client->output_next = 0;
 }
 
 static
@@ -314,7 +327,9 @@ void game_server_on_drop(void *userdata, u32 connection){
 	GameServer *gserver = (GameServer*)userdata;
 	Client *client = get_connection_client(gserver, connection);
 	// NOTE: Zero out client memory because it may contain sensible information.
-	memset(client, 0, sizeof(Client));
+
+	// TODO: this will dealloc client->output
+	//memset(client, 0, sizeof(Client));
 }
 
 static
@@ -356,6 +371,7 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 				return;
 			}
 
+			debug_print_buf("decoded", decoded, 127);
 			debug_print_buf_hex("decoded", decoded, 127);
 			Packet p = make_packet(decoded, 127);
 			client->xtea[0] = packet_read_u32(&p);
@@ -442,22 +458,29 @@ void game_server_on_write(void *userdata, u32 connection, u8 **out_data, i32 *ou
 			break;
 		}
 
-		case CLIENT_STATE_NORMAL: {
-			// TODO: check write queue / current write buffer
-			*out_data = client->writebuf;
-			*out_datalen = client->writelen;
-			client->writelen = 0;
-			break;
-		}
-
+		case CLIENT_STATE_NORMAL:
 		case CLIENT_STATE_DISCONNECT_WRITING: {
-			// TODO: check write queue / current write buffer (?)
-
-			*out_data = client->writebuf;
-			*out_datalen = client->writelen;
-			client->state = CLIENT_STATE_DISCONNECT_WAITING_WRITE;
+			ASSERT(client->output_head == client->output_next
+				|| (client->output_head + 1) == client->output_next);
+			ASSERT((client->output_tail - client->output_head) <= client->max_output);
+			if(client->output_head != client->output_next)
+				client->output_head += 1;
+			if(client->output_next != client->output_tail){
+				Packet *outp = &client->output[client->output_next & client->output_mask];
+				client->output_next += 1;
+				if(packet_wrap(outp, client->xtea)){
+					*out_data = packet_buf(outp);
+					*out_datalen = packet_written_len(outp);
+					LOG("writing %d\n", packet_written_len(outp));
+					if(client->state == CLIENT_STATE_DISCONNECT_WRITING)
+						client->state = CLIENT_STATE_DISCONNECT_WAITING_WRITE;
+				}else{
+					disconnect(gserver, client);
+				}
+			}
 			break;
 		}
+
 		case CLIENT_STATE_DISCONNECT_WAITING_WRITE: {
 			disconnect(gserver, client);
 			break;
@@ -473,6 +496,18 @@ GameServer *game_server_init(MemArena *arena,
 	GameServer *gserver = arena_alloc<GameServer>(arena, 1);
 	gserver->max_clients = max_connections;
 	gserver->clients = arena_alloc<Client>(arena, max_connections);
+	for(u32 i = 0; i < max_connections; i += 1){
+		// TODO: Should these be parameters?
+		u32 max_output = 4;
+		u32 output_mask = 3;
+		u32 writebuf_size = 32 * 1024;
+		gserver->clients[i].output = arena_alloc<Packet>(arena, max_output);
+		for(u32 j = 0; j < max_output; j += 1){
+			gserver->clients[i].output[j].buf = arena_alloc<u8>(arena, writebuf_size);
+			gserver->clients[i].output[j].bufend = writebuf_size;
+			gserver->clients[i].output[j].bufpos = 0;
+		}
+	}
 	gserver->rsa = server_rsa;
 
 	ServerParams server_params;
@@ -487,10 +522,9 @@ GameServer *game_server_init(MemArena *arena,
 	if(!gserver->server)
 		PANIC("failed to initialize game server");
 
-	i32 max_connections_closing = 2 * (i32)max_connections;
-	gserver->max_connections_closing = max_connections_closing;
+	gserver->max_connections_closing = max_connections;
 	gserver->num_connections_closing = 0;
-	gserver->connections_closing = arena_alloc<u32>(arena, max_connections_closing);
+	gserver->connections_closing = arena_alloc<u32>(arena, max_connections);
 	return gserver;
 }
 

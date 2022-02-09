@@ -6,9 +6,9 @@
 #include "server.hh"
 
 enum LoginState : u32 {
-	LOGIN_STATE_WAITING_READ = 0,
+	LOGIN_STATE_READING = 0,
 	//TODO: LOGIN_STATE_WAITING_DATABASE,
-	LOGIN_STATE_READY_TO_WRITE,
+	LOGIN_STATE_WRITING,
 	LOGIN_STATE_WAITING_WRITE,
 	LOGIN_STATE_DISCONNECTING,
 };
@@ -108,7 +108,7 @@ void send_disconnect(LoginServer *lserver, Login *login, const char *message){
 
 	if(packet_wrap(&p, login->xtea)){
 		login->writelen = packet_written_len(&p);
-		login->state = LOGIN_STATE_READY_TO_WRITE;
+		login->state = LOGIN_STATE_WRITING;
 	}else{
 		disconnect(lserver, login);
 	}
@@ -131,7 +131,7 @@ void send_charlist(LoginServer *lserver, Login *login){
 
 	if(packet_wrap(&p, login->xtea)){
 		login->writelen = packet_written_len(&p);
-		login->state = LOGIN_STATE_READY_TO_WRITE;
+		login->state = LOGIN_STATE_WRITING;
 	}else{
 		disconnect(lserver, login);
 	}
@@ -143,7 +143,7 @@ void login_server_on_accept(void *userdata, u32 connection){
 
 	LoginServer *lserver = (LoginServer*)userdata;
 	Login *login = get_connection_login(lserver, connection);
-	login->state = LOGIN_STATE_WAITING_READ;
+	login->state = LOGIN_STATE_READING;
 	login->connection = connection;
 }
 
@@ -165,7 +165,7 @@ void login_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen)
 	RSA *rsa = lserver->rsa;
 	Login *login = get_connection_login(lserver, connection);
 
-	if(login->state != LOGIN_STATE_WAITING_READ){
+	if(login->state != LOGIN_STATE_READING){
 		LOG_ERROR("unexpected message");
 		disconnect(lserver, login);
 		return;
@@ -252,7 +252,7 @@ void login_server_on_write(void *userdata, u32 connection, u8 **out_write_ptr, i
 
 	LoginServer *lserver = (LoginServer*)userdata;
 	Login *login = get_connection_login(lserver, connection);
-	if(login->state == LOGIN_STATE_READY_TO_WRITE){
+	if(login->state == LOGIN_STATE_WRITING){
 		*out_write_ptr = login->writebuf;
 		*out_write_len = login->writelen;
 		login->state = LOGIN_STATE_WAITING_WRITE;
@@ -283,35 +283,27 @@ LoginServer *login_server_init(MemArena *arena,
 	if(!lserver->server)
 		PANIC("failed to initialize login server");
 
-	// NOTE: Leave enough room for duplicates.
-	i32 max_connections_closing = 2 * (i32)max_connections;
-	lserver->max_connections_closing = max_connections_closing;
+	lserver->max_connections_closing = max_connections;
 	lserver->num_connections_closing = 0;
-	lserver->connections_closing = arena_alloc<u32>(arena, max_connections_closing);
+	lserver->connections_closing = arena_alloc<u32>(arena, max_connections);
 	return lserver;
 }
 
 void login_server_poll(LoginServer *lserver){
 	// NOTE: Because the server processes the connections in order,
-	// this array should already be sorted by connection_index but
-	// may contain duplicates.
+	// this array should already be sorted by connection_index.
 	i32 num_connections_closing = lserver->num_connections_closing;
 	u32 *connections_closing = lserver->connections_closing;
-	if(num_connections_closing > 0){
+
 #if BUILD_DEBUG
+	if(num_connections_closing > 0){
 		for(i32 i = 1; i < num_connections_closing; i += 1){
 			u32 prev = connection_index(connections_closing[i - 1]);
 			u32 cur = connection_index(connections_closing[i]);
 			ASSERT(prev <= cur);
 		}
-#endif
-		i32 j = 1;
-		for(i32 i = 1; i < num_connections_closing; i += 1){
-			if(connections_closing[i] != connections_closing[i - 1])
-				connections_closing[j++] = connections_closing[i];
-		}
-		num_connections_closing = j;
 	}
+#endif
 
 	// NOTE: Reset these before hand. Server callbacks will fill them back up.
 	lserver->num_connections_closing = 0;
