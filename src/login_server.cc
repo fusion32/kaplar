@@ -47,8 +47,9 @@ Login *get_connection_login(LoginServer *lserver, u32 connection){
 }
 
 static
-Packet packet_prepare(Login *login){
-	Packet result;
+OutPacket packet_prepare(Login *login){
+	OutPacket result;
+	result.next = NULL;
 	result.buf = login->writebuf;
 	result.bufend = sizeof(login->writebuf);
 	// reserve 8 bytes for the header
@@ -57,7 +58,7 @@ Packet packet_prepare(Login *login){
 }
 
 static
-bool packet_wrap(Packet *p, u32 *xtea){
+bool packet_wrap(OutPacket *p, u32 *xtea){
 	u8 *buf = packet_buf(p);
 	i32 len = packet_written_len(p);
 
@@ -102,7 +103,7 @@ void disconnect(LoginServer *lserver, Login *login){
 
 static
 void send_disconnect(LoginServer *lserver, Login *login, const char *message){
-	Packet p = packet_prepare(login);
+	OutPacket p = packet_prepare(login);
 	packet_write_u8(&p, 0x0A);
 	packet_write_str(&p, message);
 
@@ -116,7 +117,7 @@ void send_disconnect(LoginServer *lserver, Login *login, const char *message){
 
 static
 void send_charlist(LoginServer *lserver, Login *login){
-	Packet p = packet_prepare(login);
+	OutPacket p = packet_prepare(login);
 	// motd
 	packet_write_u8(&p, 0x14);
 	packet_write_str(&p, "1\nKaplar!");
@@ -216,7 +217,7 @@ void login_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen)
 		return;
 	}
 
-	Packet p = make_packet(decoded, 127);
+	InPacket p = in_packet(decoded, 127);
 	login->xtea[0] = packet_read_u32(&p);
 	login->xtea[1] = packet_read_u32(&p);
 	login->xtea[2] = packet_read_u32(&p);

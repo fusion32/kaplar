@@ -47,12 +47,9 @@ struct Client{
 	// to handle every case but we will need statistics
 	// of a running server to be 100% sure.
 
-	Packet *output;
-	u32 max_output;
-	u32 output_mask;
-	u32 output_head;
-	u32 output_tail;
-	u32 output_next;
+	OutPacket *out_writing;
+	OutPacket *out_queue_head;
+	OutPacket *out_queue_tail;
 };
 
 struct GameServer{
@@ -60,6 +57,8 @@ struct GameServer{
 	Client *clients;
 	RSA *rsa;
 	Server *server;
+	MemArena *out_arena;
+	OutPacket *out_pool_head;
 
 	i32 max_connections_closing;
 	i32 num_connections_closing;
@@ -73,32 +72,52 @@ Client *get_connection_client(GameServer *gserver, u32 connection){
 	return &gserver->clients[index];
 }
 
-Packet *get_packet(Client *client, u32 size){
-	u32 max_output = client->max_output;
-	u32 output_mask = client->output_mask;
+#define OUT_PACKET_BUFFER_SIZE 16 * 1024
 
-	if(client->output_next != client->output_tail){
-		u32 cur_output = client->output_tail - 1;
-		Packet *outp = &client->output[cur_output & output_mask];
-		// NOTE: If the writer doesn't surpass size bytes, size + 7
-		// will be enough for any packet_wrap padding.
-		if(size > 0 && packet_can_write(outp, size + 7))
+OutPacket *get_out_packet(GameServer *gserver, Client *client, u32 size){
+	ASSERT((client->out_queue_head != NULL && client->out_queue_tail != NULL)
+		|| (client->out_queue_head == NULL && client->out_queue_tail == NULL));
+
+	if(client->out_queue_tail){
+		// NOTE: Check for size + 7 so that if the writer doesn't surpass
+		// `size` bytes, it should be enough for any packet_wrap padding.
+		OutPacket *outp = client->out_queue_tail;
+		if(packet_can_write(outp, size + 7))
 			return outp;
 	}
 
-	// TODO: This cannot happen if we have the right amount of
-	// buffers with the right sizes.
-	if((client->output_tail - client->output_head) > max_output)
-		return NULL;
+	OutPacket *outp;
+	if(gserver->out_pool_head){
+		outp = gserver->out_pool_head;
+		gserver->out_pool_head = outp->next;
+	}else{
+		MemArena *out_arena = gserver->out_arena;
+		outp = arena_alloc<OutPacket>(out_arena, 1);
+		outp->buf = arena_alloc<u8>(out_arena, OUT_PACKET_BUFFER_SIZE);
+		outp->bufend = OUT_PACKET_BUFFER_SIZE;
+	}
 
-	Packet *outp = &client->output[client->output_tail & output_mask];
-	client->output_tail += 1;
-	outp->bufpos = 8; // reserve 8 bytes for the header
+	if(client->out_queue_tail){
+		client->out_queue_tail->next = outp;
+		client->out_queue_tail = outp;
+	}else{
+		client->out_queue_head = outp;
+		client->out_queue_tail = outp;
+	}
+	outp->next = NULL;
+	outp->bufpos = 8;
 	return outp;
 }
 
+void release_out_packet(GameServer *gserver, OutPacket *outp){
+	ASSERT(outp);
+	ASSERT(outp->bufend == OUT_PACKET_BUFFER_SIZE);
+	outp->next = gserver->out_pool_head;
+	gserver->out_pool_head = outp;
+}
+
 static
-bool packet_wrap(Packet *p, u32 *xtea){
+bool packet_wrap(OutPacket *p, u32 *xtea){
 	u8 *buf = packet_buf(p);
 	i32 len = packet_written_len(p);
 
@@ -128,7 +147,7 @@ bool packet_wrap(Packet *p, u32 *xtea){
 }
 
 static
-bool packet_unwrap(u8 *buf, i32 len, u32 *xtea, Packet *outp){
+bool packet_unwrap(u8 *buf, i32 len, u32 *xtea, InPacket *p){
 	// NOTE: Different from wrapping a packet, the message length
 	// shouldn't be considered as it is discarded earlier when
 	// reading from the socket.
@@ -160,9 +179,9 @@ bool packet_unwrap(u8 *buf, i32 len, u32 *xtea, Packet *outp){
 	if((xtea_payload_len - payload_len) < 2)
 		return false;
 
-	outp->buf = payload;
-	outp->bufend = payload_len;
-	outp->bufpos = 0;
+	p->buf = payload;
+	p->bufend = payload_len;
+	p->bufpos = 0;
 	return true;
 }
 
@@ -183,7 +202,7 @@ static
 void send_disconnect(GameServer *gserver, Client *client, const char *message){
 	client->state = CLIENT_STATE_DISCONNECT_WRITING;
 
-	Packet *p = get_packet(client, 256);
+	OutPacket *p = get_out_packet(gserver, client, 256);
 	packet_write_u8(p, 0x14);
 	packet_write_str(p, message);
 }
@@ -192,7 +211,7 @@ static
 void send_login(GameServer *gserver, Client *client){
 	client->state = CLIENT_STATE_NORMAL;
 
-	Packet *p = get_packet(client, 0);
+	OutPacket *p = get_out_packet(gserver, client, 0);
 
 	// NOTE: The comments on the side are old annotations from another
 	// implementation I did that I didn't check. So they may/will be wrong.
@@ -316,9 +335,9 @@ void game_server_on_accept(void *userdata, u32 connection){
 	Client *client = get_connection_client(gserver, connection);
 	client->state = CLIENT_STATE_HANDSHAKE_WRITING;
 	client->connection = connection;
-	client->output_head = 0;
-	client->output_tail = 0;
-	client->output_next = 0;
+	client->out_writing = NULL;
+	client->out_queue_head = NULL;
+	client->out_queue_tail = NULL;
 }
 
 static
@@ -326,10 +345,20 @@ void game_server_on_drop(void *userdata, u32 connection){
 	LOG("%08X", connection);
 	GameServer *gserver = (GameServer*)userdata;
 	Client *client = get_connection_client(gserver, connection);
-	// NOTE: Zero out client memory because it may contain sensible information.
 
-	// TODO: this will dealloc client->output
-	//memset(client, 0, sizeof(Client));
+	// NOTE: Release any out packet we're using here.
+	ASSERT((client->out_queue_head != NULL && client->out_queue_tail != NULL)
+		|| (client->out_queue_head == NULL && client->out_queue_tail == NULL));
+	if(client->out_writing)
+		release_out_packet(gserver, client->out_writing);
+	while(client->out_queue_tail){
+		OutPacket *tmp = client->out_queue_tail;
+		client->out_queue_tail = tmp->next;
+		release_out_packet(gserver, tmp);
+	}
+
+	// NOTE: Zero out client memory for security reasons.
+	memset(client, 0, sizeof(Client));
 }
 
 static
@@ -359,7 +388,10 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 			//buffer_read_u16_le(data + 5); // os
 			u16 version = buffer_read_u16_le(data + 7);
 
-			// NOTE: See note in login_server_on_read in login_server.cc.
+			// NOTE: RSA DECODE the remaining 128 bytes. This can only fail if
+			// the result contains more than 128 bytes which is impossible if
+			// the key has 1024 bits but is always good to calm your paranoid
+			// side and in case you derived a bad key unknowingly.
 			u8 *decoded = data + 9;
 			usize decoded_len = 128;
 			if(!rsa_decode(rsa, decoded, &decoded_len, 128)){
@@ -373,7 +405,7 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 
 			debug_print_buf("decoded", decoded, 127);
 			debug_print_buf_hex("decoded", decoded, 127);
-			Packet p = make_packet(decoded, 127);
+			InPacket p = in_packet(decoded, 127);
 			client->xtea[0] = packet_read_u32(&p);
 			client->xtea[1] = packet_read_u32(&p);
 			client->xtea[2] = packet_read_u32(&p);
@@ -407,7 +439,7 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 		}
 
 		case CLIENT_STATE_NORMAL: {
-			Packet p;
+			InPacket p;
 			if(!packet_unwrap(data, datalen, client->xtea, &p)){
 				disconnect(gserver, client);
 				return;
@@ -460,15 +492,21 @@ void game_server_on_write(void *userdata, u32 connection, u8 **out_data, i32 *ou
 
 		case CLIENT_STATE_NORMAL:
 		case CLIENT_STATE_DISCONNECT_WRITING: {
-			ASSERT(client->output_head == client->output_next
-				|| (client->output_head + 1) == client->output_next);
-			ASSERT((client->output_tail - client->output_head) <= client->max_output);
-			if(client->output_head != client->output_next)
-				client->output_head += 1;
-			if(client->output_next != client->output_tail){
-				Packet *outp = &client->output[client->output_next & client->output_mask];
-				client->output_next += 1;
+			ASSERT((client->out_queue_head != NULL && client->out_queue_tail != NULL)
+				|| (client->out_queue_head == NULL && client->out_queue_tail == NULL));
+
+			if(client->out_writing){
+				release_out_packet(gserver, client->out_writing);
+				client->out_writing = NULL;
+			}
+
+			if(client->out_queue_head){
+				OutPacket *outp = client->out_queue_head;
 				if(packet_wrap(outp, client->xtea)){
+					client->out_writing = outp;
+					client->out_queue_head = outp->next;
+					if(!client->out_queue_head)
+						client->out_queue_tail = NULL;
 					*out_data = packet_buf(outp);
 					*out_datalen = packet_written_len(outp);
 					LOG("writing %d\n", packet_written_len(outp));
@@ -493,22 +531,13 @@ void game_server_on_write(void *userdata, u32 connection, u8 **out_data, i32 *ou
 GameServer *game_server_init(MemArena *arena,
 		RSA *server_rsa, u16 port, u16 max_connections){
 
+	// TODO: We might want a different arena specifically for allocating OutPackets.
 	GameServer *gserver = arena_alloc<GameServer>(arena, 1);
 	gserver->max_clients = max_connections;
 	gserver->clients = arena_alloc<Client>(arena, max_connections);
-	for(u32 i = 0; i < max_connections; i += 1){
-		// TODO: Should these be parameters?
-		u32 max_output = 4;
-		u32 output_mask = 3;
-		u32 writebuf_size = 32 * 1024;
-		gserver->clients[i].output = arena_alloc<Packet>(arena, max_output);
-		for(u32 j = 0; j < max_output; j += 1){
-			gserver->clients[i].output[j].buf = arena_alloc<u8>(arena, writebuf_size);
-			gserver->clients[i].output[j].bufend = writebuf_size;
-			gserver->clients[i].output[j].bufpos = 0;
-		}
-	}
 	gserver->rsa = server_rsa;
+	gserver->out_arena = arena;
+	gserver->out_pool_head = NULL;
 
 	ServerParams server_params;
 	server_params.port = port;
