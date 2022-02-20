@@ -83,12 +83,7 @@ void panic(const char *file, i32 line,
 // ----------------------------------------------------------------
 struct MemArena;
 void *arena_alloc_raw(MemArena *arena, usize size, usize alignment);
-void *arena_alloc_raw_tmp(MemArena *arena, usize size, usize alignment);
-void arena_reset(MemArena *arena);
-MemArena *arena_init(void *memory, usize size);
-MemArena *arena_tmp(MemArena *arena);
-void arena_commit_tmp(MemArena *arena, MemArena *tmp);
-usize arena_memory_left(MemArena *arena);
+MemArena *arena_init(usize virtual_size, usize commit_granularity);
 
 template<typename T>
 constexpr void type_alignment_check(void){
@@ -106,16 +101,12 @@ static INLINE T *arena_alloc(MemArena *arena, usize num){
 	return (T*)arena_alloc_raw(arena, sizeof(T) * num, alignment);
 }
 
-template<typename T>
-static INLINE T *arena_alloc_tmp(MemArena *arena, usize num){
-	type_alignment_check<T>();
-
-	// NOTE: Enforce at least pointer alignment when allocating an array.
-	usize alignment = alignof(T);
-	if(num > 1 && alignment < alignof(void*))
-		alignment = alignof(void*);
-	return (T*)arena_alloc_raw_tmp(arena, sizeof(T) * num, alignment);
-}
+// ----------------------------------------------------------------
+// sys / stdlib wrappers
+// ----------------------------------------------------------------
+void *malloc_no_fail(usize size);
+i64 sys_clock_monotonic_msec(void);
+void sys_sleep_msec(i64 ms);
 
 // ----------------------------------------------------------------
 // Debug Utility
@@ -125,13 +116,8 @@ void debug_print_buf(char *debug_name, u8 *buf, i32 buflen);
 void debug_print_buf_hex(char *debug_name, u8 *buf, i32 buflen);
 
 // ----------------------------------------------------------------
-// stdlib / system wrappers
+// File Utility
 // ----------------------------------------------------------------
-void *kpl_alloc(usize size);
-void kpl_free(void *mem, usize size);
-i64 kpl_clock_monotonic_msec(void);
-void kpl_sleep_msec(i64 ms);
-u8 *kpl_read_entire_file(MemArena *arena, const char *filename, i32 *out_size);
-
+u8 *read_entire_file(MemArena *arena, const char *filename, i32 *out_size);
 
 #endif //KAPLAR_COMMON_HH_

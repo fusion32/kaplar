@@ -3,17 +3,6 @@
 #include "login_server.hh"
 #include "game_server.hh"
 
-struct Game{
-	MemArena *arena;
-
-	LoginServer *lserver;
-	GameServer *gserver;
-
-	//Player *players;
-	//NPC *npcs;
-	//Monster *monsters;
-};
-
 static
 RSA *rsa_default_init(void){
 	// TODO: Eventually have the private key in a PEM file
@@ -77,35 +66,31 @@ void frame_stats(i64 frame_start, i64 frame_end, i64 next_frame){
 
 #if !BUILD_TEST
 int main(int argc, char **argv){
-	// TODO: Should we use a growing arena or have these values
-	// configurable via cmdline or a configuration file?
-	usize mem_size = 0x01000000; // ~16MB
-	void *mem = kpl_alloc(mem_size);
+	// TODO: Move these to a configuration file.
+	usize arena_vsize = 0x100000000ULL; // ~4GB
+	usize arena_granularity = 0x00400000UL; // ~4MB
+	// game frame interval in milliseconds:
+	//	16 is ~60fps
+	//	33 is ~30fps
+	//	66 is ~15fps
+	i64 game_frame_interval = 33;
 
-	MemArena *arena = arena_init(mem, mem_size);
-	Game *game = arena_alloc<Game>(arena, 1);
-	game->arena = arena;
 
+	MemArena *arena = arena_init(arena_vsize, arena_granularity);
 	RSA *server_rsa = rsa_default_init();
-	game->lserver = login_server_init(arena, server_rsa, 7171, 10);
-	game->gserver = game_server_init(arena, server_rsa, 7172, 100);
+	LoginServer *lserver = login_server_init(arena, server_rsa, 7171, 10);
+	GameServer *gserver = game_server_init(arena, server_rsa, 7172, 100);
 
 	while(1){
-// (TODO: Maybe move this to a configuration file?)
-// game frame interval in milliseconds:
-//	16 is ~60fps
-//	33 is ~30fps
-//	66 is ~15fps;
-#define GAME_FRAME_INTERVAL 33
-		i64 frame_start = kpl_clock_monotonic_msec();
-		i64 next_frame = frame_start + GAME_FRAME_INTERVAL;
+		i64 frame_start = sys_clock_monotonic_msec();
+		i64 next_frame = frame_start + game_frame_interval;
 
-		login_server_poll(game->lserver);
-		game_server_poll(game->gserver);
+		login_server_poll(lserver);
+		game_server_poll(gserver);
 
-		i64 frame_end = kpl_clock_monotonic_msec();
+		i64 frame_end = sys_clock_monotonic_msec();
 		if(frame_end < next_frame)
-			kpl_sleep_msec(next_frame - frame_end);
+			sys_sleep_msec(next_frame - frame_end);
 
 #if 0 && BUILD_DEBUG
 		frame_stats(frame_start, frame_end, next_frame);

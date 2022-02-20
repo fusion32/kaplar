@@ -86,7 +86,11 @@ struct RSA{
 };
 
 RSA *rsa_alloc(void){
-	RSA *r = (RSA*)kpl_alloc(sizeof(RSA));
+	// NOTE: GMP will use malloc/free by default and will call abort()
+	// if malloc fails. We could use an arena here but it doesn't hurt
+	// to use malloc every once in a while.
+
+	RSA *r = (RSA*)malloc_no_fail(sizeof(RSA));
 	mpz_inits(r->p, r->q, r->n, r->e,
 		r->dp, r->dq, r->qi,
 		r->x0, r->x1, r->x2, r->x3, NULL);

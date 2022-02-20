@@ -57,8 +57,8 @@ struct GameServer{
 	Client *clients;
 	RSA *rsa;
 	Server *server;
-	MemArena *out_arena;
-	OutPacket *out_pool_head;
+	MemArena *output_arena;
+	OutPacket *output_head;
 
 	i32 max_connections_closing;
 	i32 num_connections_closing;
@@ -72,7 +72,7 @@ Client *get_connection_client(GameServer *gserver, u32 connection){
 	return &gserver->clients[index];
 }
 
-#define OUT_PACKET_BUFFER_SIZE 16 * 1024
+#define OUT_PACKET_BUFFER_SIZE (16 * 1024)
 
 OutPacket *get_out_packet(GameServer *gserver, Client *client, u32 size){
 	ASSERT((client->out_queue_head != NULL && client->out_queue_tail != NULL)
@@ -82,18 +82,18 @@ OutPacket *get_out_packet(GameServer *gserver, Client *client, u32 size){
 		// NOTE: Check for size + 7 so that if the writer doesn't surpass
 		// `size` bytes, it should be enough for any packet_wrap padding.
 		OutPacket *outp = client->out_queue_tail;
-		if(packet_can_write(outp, size + 7))
+		if(size > 0 && packet_can_write(outp, size + 7))
 			return outp;
 	}
 
 	OutPacket *outp;
-	if(gserver->out_pool_head){
-		outp = gserver->out_pool_head;
-		gserver->out_pool_head = outp->next;
+	if(gserver->output_head){
+		outp = gserver->output_head;
+		gserver->output_head = outp->next;
 	}else{
-		MemArena *out_arena = gserver->out_arena;
-		outp = arena_alloc<OutPacket>(out_arena, 1);
-		outp->buf = arena_alloc<u8>(out_arena, OUT_PACKET_BUFFER_SIZE);
+		MemArena *output_arena = gserver->output_arena;
+		outp = arena_alloc<OutPacket>(output_arena, 1);
+		outp->buf = arena_alloc<u8>(output_arena, OUT_PACKET_BUFFER_SIZE);
 		outp->bufend = OUT_PACKET_BUFFER_SIZE;
 	}
 
@@ -112,8 +112,8 @@ OutPacket *get_out_packet(GameServer *gserver, Client *client, u32 size){
 void release_out_packet(GameServer *gserver, OutPacket *outp){
 	ASSERT(outp);
 	ASSERT(outp->bufend == OUT_PACKET_BUFFER_SIZE);
-	outp->next = gserver->out_pool_head;
-	gserver->out_pool_head = outp;
+	outp->next = gserver->output_head;
+	gserver->output_head = outp;
 }
 
 static
@@ -258,6 +258,8 @@ void send_login(GameServer *gserver, Client *client){
 			packet_write_u8(p, 3);				// party shield
 			packet_write_u8(p, 1);				// war emblem
 			packet_write_u8(p, 1);				// will block path
+		}else{
+			packet_write_u16(p, 2400);
 		}
 		packet_write_u16(p, 0xFF00);
 	}
@@ -326,6 +328,20 @@ void send_login(GameServer *gserver, Client *client){
 	// icons
 	//packet_write_u8(p, 0xA2);
 	//packet_write_u16(p, 0);
+}
+
+static
+void send_inventory(GameServer *gserver, Client *client, u8 slot, u16 client_id){
+	OutPacket *p = get_out_packet(gserver, client, 4);
+	packet_write_u8(p, 0x78);
+	packet_write_u8(p, slot);
+	packet_write_u16(p, client_id);
+
+	// NOTE: Sending items that are countable or have a subtype will
+	// result in a crash because we're not addressing an extra byte
+	// needed in those cases.
+	//if(item->countable || item->has_subtype)
+	//	packet_write_u8(p, item->count_or_subtype);
 }
 
 static
@@ -449,10 +465,28 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 				debug_print_buf_hex("client message",
 					packet_buf(&p), packet_remainder(&p));
 
-				// check logout message
-				if(packet_read_u8(&p) == 0x14){
-					disconnect(gserver, client);
-					return;
+				u8 message = packet_read_u8(&p);
+
+				switch(message){
+					case 0x14: {	// logout
+						disconnect(gserver, client);
+						return;
+					}
+
+					case 0x96: {	// player_say
+						if(packet_read_u8(&p) != 0x01){
+							disconnect(gserver, client);
+							return;
+						}
+
+						char say_str[256];
+						packet_read_string(&p, sizeof(say_str), say_str);
+
+						u16 client_id = (u16)atoi(say_str);
+						if(client_id >= 100)
+							send_inventory(gserver, client, 0x06, client_id);
+						break;
+					}
 				}
 			}
 			break;
@@ -536,8 +570,8 @@ GameServer *game_server_init(MemArena *arena,
 	gserver->max_clients = max_connections;
 	gserver->clients = arena_alloc<Client>(arena, max_connections);
 	gserver->rsa = server_rsa;
-	gserver->out_arena = arena;
-	gserver->out_pool_head = NULL;
+	gserver->output_arena = arena;
+	gserver->output_head = NULL;
 
 	ServerParams server_params;
 	server_params.port = port;
