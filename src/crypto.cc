@@ -177,6 +177,32 @@ bool rsa_decode(RSA *r, u8 *data, usize *len, usize maxlen){
 	return true;
 }
 
+#if BUILD_TEST
+int rsa_test(void){
+	static const char *test_strings[] = {
+		"hello",
+		"ABCDEFGH",
+		"abcd",
+		"QWERTYUIOP",
+	};
+
+	usize len1, len2;
+	u8 buf[128];
+	RSA *rsa = rsa_default_init();
+	for(i32 i = 0; i < NARRAY(test_strings); i += 1){
+		len1 = len2 = strlen(test_strings[i]);
+		memcpy(buf, test_strings[i], len1);
+		ASSERT(rsa_encode(rsa, buf, &len1, sizeof(buf)));
+		ASSERT(rsa_decode(rsa, buf, &len1, sizeof(buf)));
+
+		bool passed = false;
+		if(len1 == len2 && memcmp(buf, test_strings[i], len1) == 0)
+			passed = true;
+		debug_printf("RSA test %d: %s\n", i, (passed ? "passed" : "failed"));
+	}
+	rsa_free(rsa);
+}
+#endif //BUILD_TEST
 
 // ----------------------------------------------------------------
 // XTEA

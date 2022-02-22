@@ -1,5 +1,5 @@
-#ifndef KAPLAR_WORLD_HH_
-#define KAPLAR_WORLD_HH_ 1
+#ifndef KAPLAR_GAME_HH_
+#define KAPLAR_GAME_HH_ 1
 
 #include "common.hh"
 
@@ -15,10 +15,15 @@ struct ItemType{
 	// attributes
 };
 
+struct Container;
+struct Readable;
 struct Item{
 	u16 type;
 	u16 subtype;
-	//Container *container;
+	union{
+		Container *container;
+		Readable *readable;
+	};
 
 #if 0
 // TODO: Whereas in other games items may have random attributes and values,
@@ -42,10 +47,6 @@ struct Item{
 #endif
 };
 
-struct Creature{
-	i32 a;
-};
-
 struct Tile{
 	Item ground;
 
@@ -60,19 +61,33 @@ struct Tile{
 	};
 };
 
-#define WORLD_CHUNK_WIDTH 32
-#define WORLD_CHUNK_HEIGHT 32
+#define WORLD_CHUNK_W 32
+#define WORLD_CHUNK_H 32
+#define WORLD_LAYERS 15
 
 struct WorldChunk{
-	Tile tiles[32][32];
-};
-
-struct WorldLevel{
-	WorldChunk *chunks;
+	Tile tiles[WORLD_LAYERS][WORLD_CHUNK_H][WORLD_CHUNK_W];
 };
 
 struct World{
 	//
+	
 };
 
-#endif //KAPLAR_WORLD_HH_
+struct Game{
+	MemArena *arena;
+
+	//ItemAllocator
+	//CreatureAllocator
+
+	i32 num_item_types;
+	ItemType *item_types;
+	u16 *client_to_server_id;
+
+	//i32 num_monster_types;
+	//MonsterType *monster_types;
+
+	World *world;
+};
+
+#endif //KAPLAR_GAME_HH_

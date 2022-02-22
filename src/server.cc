@@ -92,31 +92,13 @@ void tcp_abort(SOCKET s){
 	closesocket(s);
 }
 
-enum{
-	CONNECTION_FLAG_CLOSED			= 0x01,
-	CONNECTION_FLAG_CLOSING			= 0x02,
-	CONNECTION_FLAG_READING_LENGTH	= 0x04,
-};
-
-static
-u32 make_connection_id(u32 index){
-	return index;
-}
-
-static
-u32 bump_connection_id(u32 cid){
-	u32 index = cid & 0x0000FFFF;
-	u32 counter = (cid + 0x00010000) & 0xFFFF0000;
-	return counter | index;
-}
-
 struct Connection{
 	i32 freelist_next;
-	u32 connection_id;
+	u32 closed : 1;
+	u32 closing : 1;
 
 	SOCKET s;
 	sockaddr_in addr;
-	u32 flags;
 
 	// connection input
 	u8 *readbuf;
@@ -137,17 +119,19 @@ struct Server{
 	i32 freelist_head;
 	WSAPOLLFD *pollfds;
 	Connection *connections;
-	OnConnectionAccept on_accept;
-	OnConnectionDrop on_drop;
-	OnConnectionRead on_read;
-	OnConnectionWrite on_write;
+	OnAccept on_accept;
+	OnDrop on_drop;
+	OnRead on_read;
+	RequestOutput request_output;
+	RequestStatus request_status;
 };
 
 Server *server_init(MemArena *arena, ServerParams *params){
 	ASSERT(params->on_accept);
 	ASSERT(params->on_drop);
 	ASSERT(params->on_read);
-	ASSERT(params->on_write);
+	ASSERT(params->request_output);
+	ASSERT(params->request_status);
 
 	u16 port = params->port;
 	u16 max_connections = params->max_connections;
@@ -171,7 +155,6 @@ Server *server_init(MemArena *arena, ServerParams *params){
 
 		Connection *cptr = &server->connections[i];
 		cptr->freelist_next = i + 1;
-		cptr->connection_id = make_connection_id(i);
 		cptr->readbuf = arena_alloc<u8>(arena, readbuf_size);
 		cptr->readbuf_size = readbuf_size;
 	}
@@ -180,7 +163,8 @@ Server *server_init(MemArena *arena, ServerParams *params){
 	server->on_accept = params->on_accept;
 	server->on_drop = params->on_drop;
 	server->on_read = params->on_read;
-	server->on_write = params->on_write;
+	server->request_output = params->request_output;
+	server->request_status = params->request_status;
 	return server;
 }
 
@@ -199,14 +183,12 @@ void server_free_connection(Server *server, i32 c){
 	ASSERT(c >= 0 && c < server->max_connections);
 	server->pollfds[c].fd = INVALID_SOCKET;
 	server->connections[c].freelist_next = server->freelist_head;
-	server->connections[c].connection_id =
-		bump_connection_id(server->connections[c].connection_id);
 	server->freelist_head = c;
 }
 
 static
 void server_accept_connections(Server *server,
-		OnConnectionAccept on_accept, void *userdata){
+		OnAccept on_accept, void *userdata){
 	while(1){
 		sockaddr_in addr;
 		int addrlen = sizeof(sockaddr_in);
@@ -250,35 +232,37 @@ void server_accept_connections(Server *server,
 		Connection *cptr = &server->connections[c];
 		cptr->s = s;
 		cptr->addr = addr;
-		cptr->flags = CONNECTION_FLAG_READING_LENGTH;
+		cptr->closed = 0;
+		cptr->closing = 0;
 		cptr->readbuf_pos = 0;
 		cptr->bytes_to_read = 2;
+		cptr->message_length = 0;
 		cptr->write_ptr = NULL;
 		cptr->bytes_to_write = 0;
-		on_accept(userdata, cptr->connection_id);
+		on_accept(userdata, c);
 	}
 }
 
 static
 void connection_close(Connection *cptr){
-	if(!(cptr->flags & CONNECTION_FLAG_CLOSED)){
+	if(!cptr->closed){
 		tcp_close(cptr->s);
-		cptr->flags |= CONNECTION_FLAG_CLOSED;
+		cptr->closed = 1;
 	}
 }
 
 static
 void connection_abort(Connection *cptr){
-	if(!(cptr->flags & CONNECTION_FLAG_CLOSED)){
+	if(!cptr->closed){
 		tcp_abort(cptr->s);
-		cptr->flags |= CONNECTION_FLAG_CLOSED;
+		cptr->closed = 1;
 	}
 }
 
 static
-void connection_resume_reading(Connection *cptr,
-		OnConnectionRead on_read, void *userdata){
-	if(cptr->flags & CONNECTION_FLAG_CLOSED)
+void connection_resume_reading(i32 c, Connection *cptr,
+		OnRead on_read, void *userdata){
+	if(cptr->closed)
 		return;
 
 	while(1){
@@ -296,7 +280,7 @@ void connection_resume_reading(Connection *cptr,
 		cptr->readbuf_pos += ret;
 		cptr->bytes_to_read -= ret;
 		if(cptr->bytes_to_read == 0){
-			if(cptr->flags & CONNECTION_FLAG_READING_LENGTH){
+			if(cptr->message_length == 0){
 				i32 message_length = buffer_read_u16_le(cptr->readbuf);
 				if(message_length > cptr->readbuf_size){
 					connection_abort(cptr);
@@ -305,27 +289,24 @@ void connection_resume_reading(Connection *cptr,
 				cptr->readbuf_pos = 0;
 				cptr->bytes_to_read = message_length;
 				cptr->message_length = message_length;
-				cptr->flags &= ~CONNECTION_FLAG_READING_LENGTH;
 			}else{
-				on_read(userdata, cptr->connection_id,
-					cptr->readbuf, cptr->message_length);
+				on_read(userdata, c, cptr->readbuf, cptr->message_length);
 				cptr->readbuf_pos = 0;
 				cptr->bytes_to_read = 2;
-				cptr->flags |= CONNECTION_FLAG_READING_LENGTH;
+				cptr->message_length = 0;
 			}
 		}
 	}
 }
 
 static
-void connection_resume_writing(Connection *cptr,
-		OnConnectionWrite on_write, void *userdata){
-	if(cptr->flags & CONNECTION_FLAG_CLOSED)
+void connection_resume_writing(i32 c, Connection *cptr,
+		RequestOutput request_output, void *userdata){
+	if(cptr->closed)
 		return;
 	while(1){
 		if(cptr->bytes_to_write == 0){
-			on_write(userdata, cptr->connection_id,
-				&cptr->write_ptr, &cptr->bytes_to_write);
+			request_output(userdata, c, &cptr->write_ptr, &cptr->bytes_to_write);
 			if(cptr->bytes_to_write == 0)
 				return;
 		}
@@ -341,47 +322,42 @@ void connection_resume_writing(Connection *cptr,
 	}
 }
 
-void server_poll(Server *server, void *userdata,
-		u32 *connections_closing, i32 num_connections_closing){
-
-	for(i32 i = 0; i < num_connections_closing; i += 1){
-		u32 connection = connections_closing[i];
-		u32 index = connection_index(connection);
-		Connection *cptr = &server->connections[index];
-		if(cptr->connection_id != connection)
-			continue;
-		cptr->flags |= CONNECTION_FLAG_CLOSING;
-	}
-
+void server_poll(Server *server, void *userdata){
 	server_accept_connections(server, server->on_accept, userdata);
 
 	WSAPOLLFD *fds = server->pollfds;
-	int nfds = server->max_connections;
+	i32 nfds = server->max_connections;
 	WSAPoll(fds, nfds, 0);
-	for(int i = 0; i < nfds; i += 1){
-		// NOTE: Uhh... When you set fds[i].fd to INVALID_SOCKET
-		// on windows, WSAPoll will set fds[i].revents to POLLNVAL.
-		// Whereas on linux, poll will set fds[i].revents to zero.
+	for(i32 c = 0; c < nfds; c += 1){
+		// NOTE: Uhh... When you set fds[c].fd to INVALID_SOCKET
+		// on windows, WSAPoll will set fds[c].revents to POLLNVAL.
+		// Whereas on linux, poll will set fds[c].revents to zero.
 
-		if(fds[i].fd == INVALID_SOCKET)
+		if(fds[c].fd == INVALID_SOCKET)
 			continue;
 
-		Connection *cptr = &server->connections[i];
-		if(fds[i].revents){
-			ASSERT(!(fds[i].revents & POLLNVAL));
-			if(fds[i].revents & (POLLHUP | POLLERR)){
+		Connection *cptr = &server->connections[c];
+		if(fds[c].revents){
+			ASSERT(!(fds[c].revents & POLLNVAL));
+			if(fds[c].revents & (POLLHUP | POLLERR)){
 				connection_close(cptr);
 			}else{
-				if(fds[i].revents & POLLIN)
-					connection_resume_reading(cptr, server->on_read, userdata);
-				if(fds[i].revents & POLLOUT)
-					connection_resume_writing(cptr, server->on_write, userdata);
+				if(fds[c].revents & POLLIN)
+					connection_resume_reading(c, cptr, server->on_read, userdata);
+				if(fds[c].revents & POLLOUT)
+					connection_resume_writing(c, cptr, server->request_output, userdata);
 			}
 		}
 
 		// TODO: add connection timeout here
 
-		if((cptr->flags & CONNECTION_FLAG_CLOSING) && cptr->bytes_to_write == 0){
+		if(!cptr->closing){
+			ConnectionStatus status = CONNECTION_STATUS_ALIVE;
+			server->request_status(userdata, c, &status);
+			cptr->closing = (status == CONNECTION_STATUS_CLOSING);
+		}
+
+		if(cptr->closing && cptr->bytes_to_write == 0){
 			// TODO: A connection_abort here won't always work because
 			// it will cause packet loss in cases where we write and
 			// disconnect. What can be done instead is to have a delayed
@@ -393,9 +369,9 @@ void server_poll(Server *server, void *userdata,
 			connection_close(cptr);
 		}
 
-		if(cptr->flags & CONNECTION_FLAG_CLOSED){
-			server->on_drop(userdata, cptr->connection_id);
-			server_free_connection(server, i);
+		if(cptr->closed){
+			server->on_drop(userdata, c);
+			server_free_connection(server, c);
 		}
 	}
 }

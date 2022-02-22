@@ -83,7 +83,7 @@ void panic(const char *file, i32 line,
 // ----------------------------------------------------------------
 struct MemArena;
 void *arena_alloc_raw(MemArena *arena, usize size, usize alignment);
-MemArena *arena_init(usize virtual_size, usize commit_granularity);
+MemArena *arena_init(usize virtual_size, usize granularity);
 
 template<typename T>
 constexpr void type_alignment_check(void){

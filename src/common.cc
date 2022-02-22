@@ -50,7 +50,7 @@ void panic(const char *file, i32 line,
 // ----------------------------------------------------------------
 
 struct MemArena{
-	usize commit_granularity;
+	usize granularity;
 	usize virtual_size;
 	usize committed_size;
 	u8 *memend;
@@ -72,10 +72,10 @@ void *ptr_align_up(void *ptr, usize alignment){
 static
 void arena_commit(MemArena *arena){
 	LOG("arena->memend = %p", arena->memend);
-	usize commit_granularity = arena->commit_granularity;
+	usize granularity = arena->granularity;
 	usize virtual_size = arena->virtual_size;
 	usize committed_size = arena->committed_size;
-	usize new_committed_size = committed_size + commit_granularity;
+	usize new_committed_size = committed_size + granularity;
 	if(new_committed_size > virtual_size){
 		usize overflow = (new_committed_size - virtual_size) + 1;
 		PANIC("arena overflow: arena = %p, overflow = %zu", arena, overflow);
@@ -83,7 +83,7 @@ void arena_commit(MemArena *arena){
 
 	void *commit_base = arena->memend;
 #if OS_WINDOWS
-	void *ret = VirtualAlloc(commit_base, commit_granularity, MEM_COMMIT, PAGE_READWRITE);
+	void *ret = VirtualAlloc(commit_base, granularity, MEM_COMMIT, PAGE_READWRITE);
 	if(ret != commit_base)
 		PANIC("VirtualAlloc failed (error = %d)", GetLastError());
 #else
@@ -91,7 +91,7 @@ void arena_commit(MemArena *arena){
 	if(ret == -1)
 		PANIC("mprotect failed (error = %d)", errno);
 #endif
-	arena->memend += arena->commit_granularity;
+	arena->memend += granularity;
 }
 
 void *arena_alloc_raw(MemArena *arena, usize size, usize alignment){
@@ -115,11 +115,11 @@ usize os_page_size(void){
 #endif
 }
 
-MemArena *arena_init(usize virtual_size, usize commit_granularity){
-	ASSERT(commit_granularity > 0);
+MemArena *arena_init(usize virtual_size, usize granularity){
+	ASSERT(granularity > 0);
 	usize page_size = os_page_size();
 	virtual_size = align_up(virtual_size, page_size);
-	commit_granularity = align_up(commit_granularity, page_size);
+	granularity = align_up(granularity, page_size);
 
 #if OS_WINDOWS
 	void *mem = VirtualAlloc(NULL, virtual_size, MEM_RESERVE, PAGE_NOACCESS);
@@ -133,16 +133,16 @@ MemArena *arena_init(usize virtual_size, usize commit_granularity){
 #endif
 
 	MemArena tmp;
+	tmp.granularity = granularity;
 	tmp.virtual_size = virtual_size;
 	tmp.committed_size = 0;
-	tmp.commit_granularity = commit_granularity;
 	tmp.memptr = (u8*)mem;
 	tmp.memend = (u8*)mem;
 
-	MemArena *result = arena_alloc<MemArena>(&tmp, 1);
-	ASSERT(result == mem);
-	*result = tmp;
-	return result;
+	MemArena *arena = arena_alloc<MemArena>(&tmp, 1);
+	ASSERT(arena == mem);
+	*arena = tmp;
+	return arena;
 }
 
 // ----------------------------------------------------------------

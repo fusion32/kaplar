@@ -18,7 +18,6 @@ enum ClientState : u32 {
 
 struct Client{
 	ClientState state;
-	u32 connection;
 	u32 xtea[4];
 	char accname[32];
 	char password[32];
@@ -59,17 +58,12 @@ struct GameServer{
 	Server *server;
 	MemArena *output_arena;
 	OutPacket *output_head;
-
-	i32 max_connections_closing;
-	i32 num_connections_closing;
-	u32 *connections_closing;
 };
 
 static
-Client *get_connection_client(GameServer *gserver, u32 connection){
-	u32 index = connection_index(connection);
-	ASSERT(index < (u32)gserver->max_clients);
-	return &gserver->clients[index];
+Client *get_connection_client(GameServer *gserver, i32 connection){
+	ASSERT(connection >= 0 && connection < gserver->max_clients);
+	return &gserver->clients[connection];
 }
 
 #define OUT_PACKET_BUFFER_SIZE (16 * 1024)
@@ -175,8 +169,9 @@ bool packet_unwrap(u8 *buf, i32 len, u32 *xtea, InPacket *p){
 	// check that the encoded payload length doesn't
 	// overflow the packet length
 	u8 *payload = xtea_payload + 2;
+	i32 max_payload_len = xtea_payload_len - 2;
 	i32 payload_len = buffer_read_u16_le(xtea_payload);
-	if((xtea_payload_len - payload_len) < 2)
+	if(payload_len > max_payload_len)
 		return false;
 
 	p->buf = payload;
@@ -186,15 +181,7 @@ bool packet_unwrap(u8 *buf, i32 len, u32 *xtea, InPacket *p){
 }
 
 static
-void disconnect(GameServer *gserver, Client *client){
-	if(client->state == CLIENT_STATE_DISCONNECTING)
-		return;
-
-	i32 i = gserver->num_connections_closing;
-	if(i < gserver->max_connections_closing){
-		gserver->connections_closing[i] = client->connection;
-		gserver->num_connections_closing += 1;
-	}
+void disconnect(Client *client){
 	client->state = CLIENT_STATE_DISCONNECTING;
 }
 
@@ -345,19 +332,24 @@ void send_inventory(GameServer *gserver, Client *client, u8 slot, u16 client_id)
 }
 
 static
-void game_server_on_accept(void *userdata, u32 connection){
+void send_relogin_window(GameServer *gserver, Client *client){
+	OutPacket *p = get_out_packet(gserver, client, 1);
+	packet_write_u8(p, 0x28);
+}
+
+static
+void game_server_on_accept(void *userdata, i32 connection){
 	LOG("%08X", connection);
 	GameServer *gserver = (GameServer*)userdata;
 	Client *client = get_connection_client(gserver, connection);
 	client->state = CLIENT_STATE_HANDSHAKE_WRITING;
-	client->connection = connection;
 	client->out_writing = NULL;
 	client->out_queue_head = NULL;
 	client->out_queue_tail = NULL;
 }
 
 static
-void game_server_on_drop(void *userdata, u32 connection){
+void game_server_on_drop(void *userdata, i32 connection){
 	LOG("%08X", connection);
 	GameServer *gserver = (GameServer*)userdata;
 	Client *client = get_connection_client(gserver, connection);
@@ -378,7 +370,7 @@ void game_server_on_drop(void *userdata, u32 connection){
 }
 
 static
-void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
+void game_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen){
 	GameServer *gserver = (GameServer*)userdata;
 	Client *client = get_connection_client(gserver, connection);
 	switch(client->state){
@@ -386,18 +378,18 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 			RSA *rsa = gserver->rsa;
 
 			if(datalen != 137){
-				disconnect(gserver, client);
+				disconnect(client);
 				return;
 			}
 
 			u32 checksum = adler32(data + 4, datalen - 4);
 			if(buffer_read_u32_le(data) != checksum){
-				disconnect(gserver, client);
+				disconnect(client);
 				return;
 			}
 
 			if(buffer_read_u8(data + 4) != 0x0A){
-				disconnect(gserver, client);
+				disconnect(client);
 				return;
 			}
 
@@ -415,7 +407,7 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 					" possible if the RSA key has more than 1024 bits.");
 			}
 			if(decoded_len != 127){
-				disconnect(gserver, client);
+				disconnect(client);
 				return;
 			}
 
@@ -457,7 +449,7 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 		case CLIENT_STATE_NORMAL: {
 			InPacket p;
 			if(!packet_unwrap(data, datalen, client->xtea, &p)){
-				disconnect(gserver, client);
+				disconnect(client);
 				return;
 			}
 
@@ -469,13 +461,13 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 
 				switch(message){
 					case 0x14: {	// logout
-						disconnect(gserver, client);
+						disconnect(client);
 						return;
 					}
 
 					case 0x96: {	// player_say
 						if(packet_read_u8(&p) != 0x01){
-							disconnect(gserver, client);
+							disconnect(client);
 							return;
 						}
 
@@ -485,6 +477,8 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 						u16 client_id = (u16)atoi(say_str);
 						if(client_id >= 100)
 							send_inventory(gserver, client, 0x06, client_id);
+						else if(client_id == 15)
+							send_relogin_window(gserver, client);
 						break;
 					}
 				}
@@ -493,14 +487,15 @@ void game_server_on_read(void *userdata, u32 connection, u8 *data, i32 datalen){
 		}
 
 		default: {
-			disconnect(gserver, client);
+			disconnect(client);
 			break;
 		}
 	}
 }
 
 static
-void game_server_on_write(void *userdata, u32 connection, u8 **out_data, i32 *out_datalen){
+void game_server_request_output(void *userdata,
+		i32 connection, u8 **output, i32 *output_len){
 	GameServer *gserver = (GameServer*)userdata;
 	Client *client = get_connection_client(gserver, connection);
 	switch(client->state){
@@ -514,8 +509,8 @@ void game_server_on_write(void *userdata, u32 connection, u8 **out_data, i32 *ou
 				0x06, 0x00,							// message data length
 				0x1F, 0xFF, 0xFF, 0x00, 0x00, 0xFF	// message data
 			};
-			*out_data = challenge;
-			*out_datalen = sizeof(challenge);
+			*output = challenge;
+			*output_len = sizeof(challenge);
 			client->state = CLIENT_STATE_HANDSHAKE_WAITING_WRITE;
 			break;
 		}
@@ -541,23 +536,31 @@ void game_server_on_write(void *userdata, u32 connection, u8 **out_data, i32 *ou
 					client->out_queue_head = outp->next;
 					if(!client->out_queue_head)
 						client->out_queue_tail = NULL;
-					*out_data = packet_buf(outp);
-					*out_datalen = packet_written_len(outp);
+					*output = packet_buf(outp);
+					*output_len = packet_written_len(outp);
 					LOG("writing %d\n", packet_written_len(outp));
 					if(client->state == CLIENT_STATE_DISCONNECT_WRITING)
 						client->state = CLIENT_STATE_DISCONNECT_WAITING_WRITE;
 				}else{
-					disconnect(gserver, client);
+					disconnect(client);
 				}
 			}
 			break;
 		}
 
 		case CLIENT_STATE_DISCONNECT_WAITING_WRITE: {
-			disconnect(gserver, client);
+			disconnect(client);
 			break;
 		}
 	}
+}
+
+static
+void game_server_request_status(void *userdata, i32 connection, ConnectionStatus *out_status){
+	GameServer *gserver = (GameServer*)userdata;
+	Client *client = get_connection_client(gserver, connection);
+	if(client->state == CLIENT_STATE_DISCONNECTING)
+		*out_status = CONNECTION_STATUS_CLOSING;
 }
 
 // ----------------------------------------------------------------
@@ -580,22 +583,14 @@ GameServer *game_server_init(MemArena *arena,
 	server_params.on_accept = game_server_on_accept;
 	server_params.on_drop = game_server_on_drop;
 	server_params.on_read = game_server_on_read;
-	server_params.on_write = game_server_on_write;
+	server_params.request_output = game_server_request_output;
+	server_params.request_status = game_server_request_status;
 	gserver->server = server_init(arena, &server_params);
 	if(!gserver->server)
 		PANIC("failed to initialize game server");
-
-	gserver->max_connections_closing = max_connections;
-	gserver->num_connections_closing = 0;
-	gserver->connections_closing = arena_alloc<u32>(arena, max_connections);
 	return gserver;
 }
 
 void game_server_poll(GameServer *gserver){
-	i32 num_connections_closing = gserver->num_connections_closing;
-	u32 *connections_closing = gserver->connections_closing;
-
-	gserver->num_connections_closing = 0;
-	server_poll(gserver->server, gserver,
-		connections_closing, num_connections_closing);
+	server_poll(gserver->server, gserver);
 }

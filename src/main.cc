@@ -64,8 +64,11 @@ void frame_stats(i64 frame_start, i64 frame_end, i64 next_frame){
 }
 #endif
 
-#if !BUILD_TEST
+#if BUILD_TEST
+int kpl_main(int argc, char **argv){
+#else
 int main(int argc, char **argv){
+#endif
 	// TODO: Move these to a configuration file.
 	usize arena_vsize = 0x100000000ULL; // ~4GB
 	usize arena_granularity = 0x00400000UL; // ~4MB
@@ -98,31 +101,3 @@ int main(int argc, char **argv){
 	}
 	return 0;
 }
-#else //BUILD_TEST
-int main(int argc, char **argv){
-	static const char *test_strings[] = {
-		"hello",
-		"ABCDEFGH",
-		"abcd",
-		"QWERTYUIOP",
-	};
-
-	usize len;
-	u8 buf[128];
-	RSA *rsa = rsa_default_init();
-	for(i32 i = 0; i < NARRAY(test_strings); i += 1){
-		debug_printf("RSA test #%d: \"%s\"\n", i, test_strings[i]);
-		len = strlen(test_strings[i]);
-		memcpy(buf, test_strings[i], len);
-
-		ASSERT(rsa_encode(rsa, buf, &len, sizeof(buf)));
-		debug_print_buf("encoded", buf, (i32)len);
-
-		ASSERT(rsa_decode(rsa, buf, &len, sizeof(buf)));
-		debug_print_buf("decoded", buf, (i32)len);
-
-		debug_printf("\n");
-	}
-	rsa_free(rsa);
-}
-#endif //BUILD_TEST
