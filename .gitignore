@@ -1,4 +1,4 @@
-.vscode/
-build/
-local/
+*.vscode/
+*build/
+*local/
 *.exe

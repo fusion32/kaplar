@@ -247,8 +247,6 @@ int main(int argc, char **argv){
 	if(argc >= 2)
 		filename = argv[1];
 
-	printf("Listing OTB file \"%s\"\n", filename);
-
 	enum{
 		OTB_ESCAPE = 0xFD,
 		OTB_NODE_START = 0xFE,
@@ -286,9 +284,6 @@ int main(int argc, char **argv){
 		otb.bufend = insert_pos;
 	}
 
-	//debug_print_buf_hex("otb.buf", otb.buf,
-	//	otb.bufend > 128 ? 128 : otb.bufend);
-
 	if(otb_read_u32(&otb) != 0				// some kind of version (?), always zero
 	|| otb_read_u8(&otb) != OTB_NODE_START	// start of root node
 	|| otb_read_u8(&otb) != OTB_GROUP_NONE	// type of root node
@@ -304,19 +299,27 @@ int main(int argc, char **argv){
 	otb_read_u32(&otb); // same as client_version (?)
 	otb_skip(&otb, 128); // ?
 
-	printf("version: %u\n", version);
-	printf("client_version: %u\n", client_version);
-
 	if(version != 3 && client_version != OTB_CLIENT_VERSION_870){
 		printf("invalid OTB version\n");
 		return -1;
 	}
 
+	u16 max_server_id = 0;
+	u16 max_client_id = 0;
+	u16 max_speed = 0;
+	u16 max_light_level = 0;
+	u16 max_light_color = 0;
+	u16 max_top_order = 0;
 	while(otb_read_u8(&otb) == OTB_NODE_START && otb_ok(&otb)){
 		u8 type = otb_read_u8(&otb);
 		u32 flags = otb_read_u32(&otb);
 
-		printf("node: type = %u flags = %08X ", type, flags);
+		u16 server_id = 0;
+		u16 client_id = 0;
+		u16 speed = 0;
+		u16 light_level = 0;
+		u16 light_color = 0;
+		u8 top_order = 0;
 
 		while(otb_ok(&otb)){
 			u8 attrib = otb_read_u8(&otb);
@@ -330,7 +333,7 @@ int main(int argc, char **argv){
 							" OTB_ATTRIB_SERVER_ID (%u)\n", attrib_size);
 						return -1;
 					}
-					printf("server_id = %u ", otb_read_u16(&otb));
+					server_id = otb_read_u16(&otb);
 					break;
 				}
 
@@ -340,7 +343,7 @@ int main(int argc, char **argv){
 							" OTB_ATTRIB_CLIENT_ID (%u)\n", attrib_size);
 						return -1;
 					}
-					printf("client_id = %u ", otb_read_u16(&otb));
+					client_id = otb_read_u16(&otb);
 					break;
 				}
 
@@ -350,7 +353,7 @@ int main(int argc, char **argv){
 							" OTB_ATTRIB_SPEED (%u)\n", attrib_size);
 						return -1;
 					}
-					printf("speed = %u ", otb_read_u16(&otb));
+					speed = otb_read_u16(&otb);
 					break;
 				}
 
@@ -360,8 +363,8 @@ int main(int argc, char **argv){
 							" OTB_ATTRIB_LIGHT2 (%u)\n", attrib_size);
 						return -1;
 					}
-					printf("light_level = %u ", otb_read_u16(&otb));
-					printf("light_color = %u ", otb_read_u16(&otb));
+					light_level = otb_read_u16(&otb);
+					light_color = otb_read_u16(&otb);
 					break;
 				}
 
@@ -371,19 +374,39 @@ int main(int argc, char **argv){
 							" OTB_ATTRIB_TOP_ORDER (%u)\n", attrib_size);
 						return -1;
 					}
-					printf("top_order = %u ", otb_read_u8(&otb));
+					top_order = otb_read_u8(&otb);
 					break;
 				}
 
 				default: {
-					printf("attrib %u (ignored, size = %u) ", attrib, attrib_size);
 					otb_skip(&otb, attrib_size);
 					break;
 				}
 			}
 		}
-		printf("\n");
+
+		if(server_id > max_server_id)
+			max_server_id = server_id;
+		if(client_id > max_client_id)
+			max_client_id = client_id;
+		if(speed > max_speed)
+			max_speed = speed;
+		if(light_level > max_light_level)
+			max_light_level = light_level;
+		if(light_color > max_light_color)
+			max_light_color = light_color;
+		if(top_order > max_top_order)
+			max_top_order = top_order;
+
+		printf("{0x%08X, %u, %u, %u, %u, %u, %u, %u},\n",
+			flags, server_id, client_id, speed, type, light_level, light_color, top_order);
 	}
+	printf("max_server_id = %u\n", max_server_id);
+	printf("max_client_id = %u\n", max_client_id);
+	printf("max_speed = %u\n", max_speed);
+	printf("max_light_level = %u\n", max_light_level);
+	printf("max_light_color = %u\n", max_light_color);
+	printf("max_top_order = %u\n", max_top_order);
 
 	// NOTE: Check that we parsed the whole file after removing escape codes
 	// and that the last byte is an OTB_NODE_END related to the root node.

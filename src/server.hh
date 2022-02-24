@@ -1,5 +1,5 @@
 #ifndef KAPLAR_SERVER_HH_
-#define KAPLAR_SERVER_HH_
+#define KAPLAR_SERVER_HH_ 1
 
 #include "common.hh"
 

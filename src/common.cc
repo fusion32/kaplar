@@ -87,7 +87,7 @@ void arena_commit(MemArena *arena){
 	if(ret != commit_base)
 		PANIC("VirtualAlloc failed (error = %d)", GetLastError());
 #else
-	int ret = mprotect(commit_base, commit_size, PROT_READ | PROT_WRITE);
+	int ret = mprotect(commit_base, granularity, PROT_READ | PROT_WRITE);
 	if(ret == -1)
 		PANIC("mprotect failed (error = %d)", errno);
 #endif
@@ -116,6 +116,7 @@ usize os_page_size(void){
 }
 
 MemArena *arena_init(usize virtual_size, usize granularity){
+	ASSERT(virtual_size > 0);
 	ASSERT(granularity > 0);
 	usize page_size = os_page_size();
 	virtual_size = align_up(virtual_size, page_size);

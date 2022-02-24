@@ -245,6 +245,8 @@ void send_login(GameServer *gserver, Client *client){
 			packet_write_u8(p, 3);				// party shield
 			packet_write_u8(p, 1);				// war emblem
 			packet_write_u8(p, 1);				// will block path
+		}else if(x == 9 && y == 6 && z == 7){
+			packet_write_u16(p, 1998);
 		}else{
 			packet_write_u16(p, 2400);
 		}
@@ -297,7 +299,7 @@ void send_login(GameServer *gserver, Client *client){
 
 	// world light
 	packet_write_u8(p, 0x82);
-	packet_write_u8(p, 250);					// level
+	packet_write_u8(p, 70);						// level
 	packet_write_u8(p, 0xD7);					// color
 
 	// creature light
