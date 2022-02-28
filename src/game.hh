@@ -80,10 +80,11 @@ struct Game{
 	//ItemAllocator
 	//CreatureAllocator
 
-	i32 num_item_types;
+	u16 max_item_types;
 	ItemType *item_types;
 	u16 *client_to_server_id;
 
+	//i32 max_monster_types;
 	//i32 num_monster_types;
 	//MonsterType *monster_types;
 

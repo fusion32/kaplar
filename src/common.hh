@@ -101,6 +101,12 @@ static INLINE T *arena_alloc(MemArena *arena, usize num){
 	return (T*)arena_alloc_raw(arena, sizeof(T) * num, alignment);
 }
 
+template<typename T>
+static INLINE T *arena_allocz(MemArena *arena, usize num){
+	T *result = arena_alloc<T>(arena, num);
+	memset(result, 0, sizeof(T) * num);
+}
+
 // ----------------------------------------------------------------
 // sys / stdlib wrappers
 // ----------------------------------------------------------------

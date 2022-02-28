@@ -1,36 +1,4 @@
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef int32_t i32;
-typedef size_t usize;
-
-static
-u8 buffer_read_u8(u8 *buf){
-	return buf[0];
-}
-
-static
-u16 buffer_read_u16_le(u8 *buf){
-	return (u16)buf[0] | ((u16)buf[1] << 8);
-}
-
-static
-u32 buffer_read_u32_le(u8 *buf){
-	return (u32)buf[0] | ((u32)buf[1] << 8)
-		| ((u32)buf[2] << 16) | ((u32)buf[3] << 24);
-}
-
-static
-void *malloc_nofail(usize size){
-	void *mem = malloc(size);
-	if(!mem) abort();
-	return mem;
-}
+#include "common.hh"
 
 enum OTB_ClientVersion : u8 {
 	OTB_CLIENT_VERSION_750 = 1,
@@ -203,43 +171,6 @@ void otb_read_string(OTB_Reader *r, u16 maxlen, char *outstr){
 		outstr[0] = 0;
 	}
 	r->bufpos += len;
-}
-
-static
-void *read_entire_file(const char *filename, i32 *out_fsize){
-	FILE *f = fopen(filename, "rb");
-	if(!f)
-		return NULL;
-
-	fseek(f, 0, SEEK_END);
-	i32 fsize = (i32)ftell(f);
-	fseek(f, 0, SEEK_SET);
-
-	void *fmem = malloc_nofail(fsize);
-	if(fread(fmem, 1, fsize, f) != fsize){
-		printf("failed to read file \"%s\" (ferror = %d, feof = %d)\n",
-			filename, ferror(f), feof(f));
-		exit(-1);
-	}
-	fclose(f);
-
-	if(out_fsize)
-		*out_fsize = fsize;
-	return fmem;
-}
-
-static
-void debug_print_buf_hex(char *debug_name, u8 *buf, i32 buflen){
-	printf("buf (%s, len = %d):\n", debug_name, buflen);
-	for(i32 i = 0; i < buflen; i += 1){
-		if((i & 15) == 15)
-			printf("%02X\n", buf[i]);
-		else
-			printf("%02X ", buf[i]);
-	}
-
-	if(buflen & 15)
-		putchar('\n');
 }
 
 int main(int argc, char **argv){
