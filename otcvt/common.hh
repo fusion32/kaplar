@@ -45,7 +45,7 @@ u32 buffer_read_u32_le(u8 *buf){
 }
 
 void *malloc_no_fail(usize size);
-void *read_entire_file(const char *filename, i32 *out_size);
+u8 *read_entire_file(const char *filename, i32 trailing_zeros, i32 *out_fsize);
 void debug_print_buf_hex(char *debug_name, u8 *buf, i32 buflen);
 
 void panic(const char *fmt, ...);

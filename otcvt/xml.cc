@@ -2,8 +2,17 @@
 // parsing old OpenTibia XML files.
 
 #include "xml.hh"
-#include <stdio.h>
-#include <string.h>
+
+static
+bool ch_is_alpha(int ch){
+	return (ch >= 65 && ch <= 90) // A-Z characters
+		|| (ch >= 97 && ch <= 122); // a-z characters
+}
+
+static
+bool ch_is_print(int ch){
+	return ch >= 0x20 && ch <= 0x7E;
+}
 
 enum : int {
 	// single-character tokens use their ASCII code values
@@ -24,10 +33,14 @@ struct XML_State{
 	// TODO: If we want to use XML for anything we would need
 	// proper diagnostics like error messages with filename
 	// and line.
+	const char *filename;
+	u8 *fbuf;
+	u8 *fend;
+	u8 *fptr;
+	i32 line;
 
-	u8 *buf;
-	i32 bufpos;
-	i32 bufend;
+	i32 errbuf_pos;
+	char errbuf[1024];
 
 	u32 tokbuf_pos;
 	XML_Token tokbuf[8];
@@ -37,112 +50,95 @@ static void xml_next_token(XML_State *xml, XML_Token *tok);
 
 XML_State *xml_init_from_file(const char *filename){
 	i32 buflen;
-	u8 *buf = (u8*)read_entire_file(filename, &buflen);
+	u8 *buf = (u8*)read_entire_file(filename, 16, &buflen);
 	if(!buf)
 		return NULL;
 
 	// NOTE: Some XML files have this UTF-8 BOM. Skip it.
 	i32 start_pos = 0;
-	if(buflen >= 3 && buf[0] == 0xEF
-	&& buf[1] == 0xBB && buf[2] == 0xBF){
+	if(buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF)
 		start_pos = 3;
-	}
 
 	XML_State *xml = (XML_State*)malloc_no_fail(sizeof(XML_State));
-	xml->buf = buf;
-	xml->bufpos = start_pos;
-	xml->bufend = buflen;
+	xml->filename = filename;
+	xml->fbuf = buf;
+	xml->fend = buf + buflen;
+	xml->fptr = buf + start_pos;
+	xml->line = 1;
+
+	xml->errbuf_pos = 0;
+	xml->errbuf[0] = 0;
+
 	xml->tokbuf_pos = 0;
 	for(i32 i = 0; i < NARRAY(xml->tokbuf); i += 1)
 		xml_next_token(xml, &xml->tokbuf[i]);
+
 	return xml;
 }
 
 void xml_free(XML_State *xml){
-	free(xml->buf);
+	free(xml->fbuf);
 	free(xml);
 }
 
 static
-bool xml_can_read(XML_State *xml, i32 bytes){
-	return (xml->bufend - xml->bufpos) >= bytes;
+bool xml_error(XML_State *xml){
+	return xml->errbuf_pos > 0;
 }
 
 static
-bool xml_eof(XML_State *xml){
-	return !xml_can_read(xml, 1);
+void xml_errbuf_vappend(XML_State *xml, const char *fmt, va_list ap){
+	char *insert_ptr = &xml->errbuf[xml->errbuf_pos];
+	i32 remainder = NARRAY(xml->errbuf) - xml->errbuf_pos;
+	if(remainder <= 1)
+		return;
+	i32 ret = vsnprintf(insert_ptr, remainder, fmt, ap);
+	ASSERT(ret > 0);
+	xml->errbuf_pos += ret;
 }
 
 static
-u8 xml_read_one(XML_State *xml){
-	u8 result = 0;
-	if(xml_can_read(xml, 1))
-		result = xml->buf[xml->bufpos];
-	xml->bufpos += 1;
-	return result;
-}
-
-static
-u8 xml_peek_one(XML_State *xml){
-	u8 result = 0;
-	if(xml_can_read(xml, 1))
-		result = xml->buf[xml->bufpos];
-	return result;
-}
-
-static
-void xml_skip_one(XML_State *xml){
-	xml->bufpos += 1;
-}
-
-static
-bool xml_match_skip(XML_State *xml, i32 n, ...){
-	if(!xml_can_read(xml, n))
-		return false;
-
+void xml_errbuf_append(XML_State *xml, const char *fmt, ...){
 	va_list ap;
-	va_start(ap, n);
-	for(i32 i = 0; i < n; i += 1){
-		u8 ch = va_arg(ap, u8);
-		if(ch != xml->buf[xml->bufpos + i]){
-			va_end(ap);
+	va_start(ap, fmt);
+	xml_errbuf_vappend(xml, fmt, ap);
+	va_end(ap);
+}
+
+static
+void xml_log_error(XML_State *xml, const char *type, const char *fmt, ...){
+	xml_errbuf_append(xml, "%s:%d: (%s) ", xml->filename, xml->line, type);
+	va_list ap;
+	va_start(ap, fmt);
+	xml_errbuf_vappend(xml, fmt, ap);
+	va_end(ap);
+	xml_errbuf_append(xml, "\n");
+}
+
+static
+void xml_lex_newline(XML_State *xml){
+	ASSERT(xml->fptr[0] == '\n' || xml->fptr[0] == '\r');
+	if(xml->fptr[0] == '\n'){
+		xml->fptr += (xml->fptr[1] == '\r') ? 2 : 1;
+	}else{
+		xml->fptr += (xml->fptr[1] == '\n') ? 2 : 1;
+	}
+	xml->line += 1;
+}
+
+static
+bool xml_lex_ident(XML_State *xml, XML_Token *tok){
+	ASSERT(ch_is_alpha(xml->fptr[0]));
+	i32 insert_pos = 0;
+	while(xml->fptr[0] && ch_is_alpha(xml->fptr[0])){
+		if(insert_pos >= (sizeof(tok->text) - 1)){
+			xml_log_error(xml, "impl error",
+				"identifier length limit reached (%d)",
+				NARRAY(tok->text));
 			return false;
 		}
-	}
-	va_end(ap);
-	xml->bufpos += n;
-	return true;
-}
-
-static
-u8 xml_peek(XML_State *xml, i32 offset){
-	u8 result = 0;
-	if(xml_can_read(xml, offset + 1))
-		result = xml->buf[xml->bufpos + offset];
-	return result;
-}
-
-static
-bool ch_is_alpha(int ch){
-	return (ch >= 65 && ch <= 90) // A-Z characters
-		|| (ch >= 97 && ch <= 122); // a-z characters
-}
-
-static
-bool xml_lex_ident(XML_State *xml, XML_Token *tok, u8 ch){
-	if(!ch_is_alpha(ch))
-		return false; // error: unexpected character
-
-	i32 insert_pos = 0;
-	tok->text[insert_pos++] = ch;
-	while(1){
-		ch = xml_peek_one(xml);
-		if(xml_eof(xml) || !ch_is_alpha(ch))
-			break;
-		if(insert_pos >= (sizeof(tok->text) - 1))
-			return false; // impl error: identifier length is too large
-		tok->text[insert_pos++] = ch;
-		xml_skip_one(xml);
+		tok->text[insert_pos++] = xml->fptr[0];
+		xml->fptr += 1;
 	}
 
 	tok->text[insert_pos] = 0;
@@ -152,25 +148,42 @@ bool xml_lex_ident(XML_State *xml, XML_Token *tok, u8 ch){
 
 static
 bool xml_lex_string(XML_State *xml, XML_Token *tok){
-	u8 ch = xml_read_one(xml);
+	ASSERT(xml->fptr[0] == '"');
+	xml->fptr += 1; // skip opening quote
+
 	i32 insert_pos = 0;
-	while(!xml_eof(xml) && ch != '"'){
-		if(ch <= 0x1F)
-			return false; // error: unexpected control character inside string
+	while(xml->fptr[0] && xml->fptr[0] != '"'){
+		if(xml->fptr[0] <= 0x1F){
+			xml_log_error(xml, "lexer error",
+				"unexpected control character inside string (0x%02X)",
+				xml->fptr[0]);
+			return false;
+		}
 
 		// NOTE: We don't need to scan for escape sequences because it seems
 		// that XML's escape sequences are in the form of &code; where code
 		// is the name of the symbol which means it doesn't contain the symbol
 		// itself. For example a double quote escape sequence would be &quot;
 		// while a single quote sequence would be &apos; and so on.
-		if(insert_pos >= (sizeof(tok->text) - 1))
-			return false; // impl error: string length is too large
-		tok->text[insert_pos++] = ch;
-		ch = xml_read_one(xml);
+		if(insert_pos >= (sizeof(tok->text) - 1)){
+			xml_log_error(xml, "impl error",
+				"string length limit reached (%d)",
+				NARRAY(tok->text));
+			return false;
+		}
+		tok->text[insert_pos++] = xml->fptr[0];
+		xml->fptr += 1;
 	}
-	if(xml_eof(xml))
-		return false; // error: unexpected end of file
-	ASSERT(ch == '"');
+
+	if(!xml->fptr[0]){
+		xml_log_error(xml, "lexer error",
+			"unexpected end of file while lexing string");
+		return false;
+	}
+
+	ASSERT(xml->fptr[0] == '"');
+	xml->fptr += 1; // skip closing quote
+
 	tok->text[insert_pos] = 0;
 	tok->token = TOKEN_STRING;
 	return true;
@@ -178,33 +191,68 @@ bool xml_lex_string(XML_State *xml, XML_Token *tok){
 
 static
 bool xml_lex_comment(XML_State *xml){
-	while(!xml_eof(xml) && !xml_match_skip(xml, 3, '-', '-', '>'))
-		xml_read_one(xml);
-	return !xml_eof(xml); // error: unexpected end of file
+	ASSERT(xml->fptr[0] == '<'
+		&& xml->fptr[1] == '!'
+		&& xml->fptr[2] == '-'
+		&& xml->fptr[3] == '-');
+	xml->fptr += 4; // skip "<!--"
+
+	while(xml->fptr[0] && (xml->fptr[0] != '-'
+	|| xml->fptr[1] != '-' || xml->fptr[2] != '>')){
+		if(xml->fptr[0] == '\n' || xml->fptr[0] == '\r')
+			xml_lex_newline(xml);
+		xml->fptr += 1;
+	}
+	xml->fptr += 3; // skip "-->"
+
+	if(!xml->fptr[0]){
+		xml_log_error(xml, "lexer error",
+			"unexpected end of file while lexing comment");
+		return false;
+	}
+	return true;
 }
 
 static
 bool xml_lex_prolog(XML_State *xml){
-	while(!xml_eof(xml) && !xml_match_skip(xml, 2, '?', '>'))
-		xml_read_one(xml);
-	return !xml_eof(xml); // error: unexpected end of file
+	ASSERT(xml->fptr[0] == '<'
+		&& xml->fptr[1] == '?');
+	xml->fptr += 2; // skip "<?"
+
+	while(xml->fptr[0] && (xml->fptr[0] != '?' || xml->fptr[1] != '>'))
+		xml->fptr += 1;
+	xml->fptr += 2; // skip "?>"
+
+	if(!xml->fptr[0]){
+		xml_log_error(xml, "lexer error",
+			"unexpected end of file while lexing prolog");
+		return false;
+	}
+	return true;
 }
 
 static
 void xml_next_token(XML_State *xml, XML_Token *tok){
-	while(1){
-		if(xml_eof(xml)){
-			tok->token = TOKEN_EOF;
-			return;
-		}
+	if(xml_error(xml)){
+		tok->token = TOKEN_INVALID;
+		return;
+	}
 
-		u8 ch = xml_read_one(xml);
-		switch(ch){
+	while(1){
+		switch(xml->fptr[0]){
+			// end of file
+			case 0:
+				tok->token = TOKEN_EOF;
+				return;
+
+			// new line
+			case '\n': case '\r':
+				xml_lex_newline(xml);
+				continue;
+
 			// skip whitespace
-			case '\n':
-			case '\r':
-			case '\t':
-			case ' ':
+			case '\t': case '\v': case '\f': case ' ':
+				xml->fptr += 1;
 				continue;
 
 			// string
@@ -215,13 +263,15 @@ void xml_next_token(XML_State *xml, XML_Token *tok){
 
 			// ascii tokens
 			case '<':
-				if(xml_match_skip(xml, 3, '!', '-', '-')){
+				if(xml->fptr[1] == '!'
+				&& xml->fptr[2] == '-'
+				&& xml->fptr[3] == '-'){
 					if(!xml_lex_comment(xml)){
 						tok->token = TOKEN_INVALID;
 						return;
 					}
 					continue;
-				}else if(xml_match_skip(xml, 1, '?')){
+				}else if(xml->fptr[1] == '?'){
 					if(!xml_lex_prolog(xml)){
 						tok->token = TOKEN_INVALID;
 						return;
@@ -233,15 +283,23 @@ void xml_next_token(XML_State *xml, XML_Token *tok){
 			case '/':
 			case '=':
 			case '>':
-				tok->token = ch;
+				tok->token = xml->fptr[0];
+				xml->fptr += 1;
 				return;
 
 			default:
 				// NOTE: If no other token was matched, the only token
 				// left is an identifier token. If it can't be matched,
 				// it's a lexing error.
-				if(!xml_lex_ident(xml, tok, ch))
+				if(!ch_is_alpha(xml->fptr[0])){
+					u8 ch = ch_is_print(xml->fptr[0]) ? xml->fptr[0] : '.';
+					xml_log_error(xml, "lexer error",
+						"unexpected character (0x%02X, '%c')",
+						xml->fptr[0], ch);
 					tok->token = TOKEN_INVALID;
+				}else if(!xml_lex_ident(xml, tok)){
+					tok->token = TOKEN_INVALID;
+				}
 				return;
 		}
 	}
@@ -344,9 +402,7 @@ bool string_eq(const char *s1, const char *s2){
 
 bool xml_read_node(XML_State *xml, XML_NodeTag *outt, XML_NodeAttributes *outn){
 	XML_Token tag, key, value;
-
-	outt->parsing_error = false;
-	if(!xml_tokbuf_match(xml, 2, '<', TOKEN_IDENT))
+	if(xml_error(xml) || !xml_tokbuf_match(xml, 2, '<', TOKEN_IDENT))
 		return false;
 	xml_tokbuf_consume(xml, 2, NULL, &tag);
 	string_copy(outt->text, sizeof(outt->text), tag.text);
@@ -370,20 +426,23 @@ bool xml_read_node(XML_State *xml, XML_NodeTag *outt, XML_NodeAttributes *outn){
 		xml_tokbuf_consume(xml, 2, NULL, NULL);
 		outn->self_closed = true;
 	}else{
-		outt->parsing_error = true;
+		xml_log_error(xml, "parsing error",
+			"unexpected token in node's attributes");
 		return false;
 	}
 	return true;
 }
 
 bool xml_close_node(XML_State *xml, XML_NodeTag *tag){
-	if(!xml_tokbuf_match(xml, 4, '<', '/', TOKEN_IDENT, '>'))
+	if(xml_error(xml) || !xml_tokbuf_match(xml, 4, '<', '/', TOKEN_IDENT, '>'))
 		return false;
 
 	XML_Token tok;
 	xml_tokbuf_consume(xml, 4, NULL, NULL, &tok, NULL);
 	if(!string_eq(tag->text, tok.text)){
-		tag->parsing_error = true;
+		xml_log_error(xml, "parsing error",
+			"expected </%s> closing tag, got </%s> instead",
+			tag->text, tok.text);
 		return false;
 	}
 	return true;
@@ -430,10 +489,11 @@ int main(int argc, char **argv){
 	XML_NodeTag items_tag;
 	XML_NodeAttributes items_attr;
 	if(!xml_read_node(xml, &items_tag, &items_attr)){
-		if(items_tag.parsing_error)
-			printf("failed to parse root node\n");
-		else
+		if(xml_error(xml)){
+			printf("%s\n", xml->errbuf);
+		}else{
 			printf("root node not found\n");
+		}
 		return -1;
 	}
 
@@ -498,19 +558,14 @@ int main(int argc, char **argv){
 			}
 
 			printf("    </item>\n");
-			if(!xml_close_node(xml, &item_tag) || item_tag.parsing_error){
-				printf("failed to close <item> node\n");
-				return -1;
-			}
+			if(!xml_close_node(xml, &item_tag))
+				break;
 		}
 	}
-	if(item_tag.parsing_error){
-		printf("<item> parsing error\n");
-		return -1;
-	}
+	xml_close_node(xml, &items_tag);
 
-	if(!xml_close_node(xml, &items_tag) || items_tag.parsing_error){
-		printf("failed to close <items> node\n");
+	if(xml_error(xml)){
+		printf("%s\n", xml->errbuf);
 		return -1;
 	}
 

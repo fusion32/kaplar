@@ -187,7 +187,7 @@ int main(int argc, char **argv){
 	};
 
 	OTB_Reader otb = {};
-	otb.buf = (u8*)read_entire_file(filename, &otb.bufend);
+	otb.buf = (u8*)read_entire_file(filename, 0, &otb.bufend);
 	if(!otb.buf){
 		printf("failed to open file \"%s\"\n", filename);
 		return -1;

@@ -6,7 +6,9 @@ void *malloc_no_fail(usize size){
 	return mem;
 }
 
-void *read_entire_file(const char *filename, i32 *out_fsize){
+u8 *read_entire_file(const char *filename, i32 trailing_zeros, i32 *out_fsize){
+	ASSERT(filename != NULL);
+	ASSERT(trailing_zeros >= 0);
 	FILE *f = fopen(filename, "rb");
 	if(!f)
 		return NULL;
@@ -15,7 +17,10 @@ void *read_entire_file(const char *filename, i32 *out_fsize){
 	i32 fsize = (i32)ftell(f);
 	fseek(f, 0, SEEK_SET);
 
-	void *fmem = malloc_no_fail(fsize);
+	u8 *fmem = (u8*)malloc_no_fail(fsize + trailing_zeros);
+	if(trailing_zeros > 0)
+		memset(fmem + fsize, 0, trailing_zeros);
+
 	if(fread(fmem, 1, fsize, f) != fsize){
 		printf("failed to read file \"%s\" (ferror = %d, feof = %d)\n",
 			filename, ferror(f), feof(f));

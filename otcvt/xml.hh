@@ -8,7 +8,6 @@ XML_State *xml_init_from_file(const char *filename);
 void xml_free(XML_State *state);
 
 struct XML_NodeTag{
-	bool parsing_error;
 	char text[32];
 };
 
