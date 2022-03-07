@@ -47,6 +47,9 @@ u32 buffer_read_u32_le(u8 *buf){
 void *malloc_no_fail(usize size);
 u8 *read_entire_file(const char *filename, i32 trailing_zeros, i32 *out_fsize);
 void debug_print_buf_hex(char *debug_name, u8 *buf, i32 buflen);
+void string_copy(char *dst, i32 dstlen, const char *src);
+void string_ascii_tolower(char *dst, i32 dstlen, const char *src);
+bool string_eq(const char *s1, const char *s2);
 
 void panic(const char *fmt, ...);
 #define PANIC(...) panic(__VA_ARGS__)

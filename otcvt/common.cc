@@ -46,6 +46,36 @@ void debug_print_buf_hex(char *debug_name, u8 *buf, i32 buflen){
 		putchar('\n');
 }
 
+void string_copy(char *dst, i32 dstlen, const char *src){
+	i32 i = 0;
+	while(src[i] && i < (dstlen - 1)){
+		dst[i] = src[i];
+		i += 1;
+	}
+	dst[i] = 0;
+}
+
+void string_ascii_tolower(char *dst, i32 dstlen, const char *src){
+	i32 i = 0;
+	while(src[i] && i < (dstlen - 1)){
+		// NOTE: Only touch it if its an uppercase ascii letter.
+		if(src[i] >= 65 && src[i] <= 90){
+			dst[i] = src[i] + 32;
+		}else{
+			dst[i] = src[i];
+		}
+		i += 1;
+	}
+	dst[i] = 0;
+}
+
+bool string_eq(const char *s1, const char *s2){
+	i32 i = 0;
+	while(s1[i] != 0 && s1[i] == s2[i])
+		i += 1;
+	return s1[i] == s2[i];
+}
+
 void panic(const char *fmt, ...){
 	va_list ap;
 	va_start(ap, fmt);

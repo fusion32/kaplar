@@ -1,5 +1,9 @@
-// NOTE: This is the simplest XML parser for the purpose of
-// parsing old OpenTibia XML files.
+// NOTE: This is a simple XML parser made for parsing specifically
+// XML nodes and it's attributes but not it's contents.
+//	For example, it can parse <node attr1=".." attr2=".."/> but cannot
+// parse <node>CONTENT</node>. Nodes can have children but thats it.
+//	This is useful for us because all XML files from OpenTibia are
+// all structured in this form.
 
 #include "xml.hh"
 
@@ -30,9 +34,6 @@ struct XML_Token{
 };
 
 struct XML_State{
-	// TODO: If we want to use XML for anything we would need
-	// proper diagnostics like error messages with filename
-	// and line.
 	const char *filename;
 	u8 *fbuf;
 	u8 *fend;
@@ -55,6 +56,12 @@ XML_State *xml_init_from_file(const char *filename){
 		return NULL;
 
 	// NOTE: Some XML files have this UTF-8 BOM. Skip it.
+	// This is the unicode character U+FEFF but because we
+	// are not parsing codepoints we need to handle this as
+	// a special case. Inside strings however, we accept
+	// everything except for control characters so they can
+	// contain UTF-8 encoded characters.
+
 	i32 start_pos = 0;
 	if(buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF)
 		start_pos = 3;
@@ -81,9 +88,12 @@ void xml_free(XML_State *xml){
 	free(xml);
 }
 
-static
 bool xml_error(XML_State *xml){
 	return xml->errbuf_pos > 0;
+}
+
+char *xml_error_string(XML_State *xml){
+	return xml->errbuf;
 }
 
 static
@@ -382,23 +392,6 @@ i32 xml_unescape_string(char *s){
 // ----------------------------------------------------------------
 // Parsing
 // ----------------------------------------------------------------
-static
-void string_copy(char *dst, i32 dstlen, const char *src){
-	i32 i = 0;
-	while(src[i] && i < (dstlen - 1)){
-		dst[i] = src[i];
-		i += 1;
-	}
-	dst[i] = 0;
-}
-
-static
-bool string_eq(const char *s1, const char *s2){
-	i32 i = 0;
-	while(s1[i] != 0 && s1[i] == s2[i])
-		i += 1;
-	return s1[i] == s2[i];
-}
 
 bool xml_read_node(XML_State *xml, XML_NodeTag *outt, XML_NodeAttributes *outn){
 	XML_Token tag, key, value;
@@ -448,6 +441,7 @@ bool xml_close_node(XML_State *xml, XML_NodeTag *tag){
 	return true;
 }
 
+#if 0
 int main(int argc, char **argv){
 	const char *filename = "items.xml";
 	if(argc >= 2)
@@ -459,12 +453,17 @@ int main(int argc, char **argv){
 		return -1;
 	}
 
-#if 0
 	bool eof = false;
 	while(!eof){
 		XML_Token tok;
 		xml_tokbuf_consume(xml, 1, &tok);
 		switch(tok.token){
+			case TOKEN_INVALID:
+				printf("TOKEN_INVALID\n");
+				if(xml_error(xml))
+					printf("%s\n", xml_error_string(xml));
+				eof = true;
+				break;
 			case TOKEN_EOF:
 				printf("TOKEN_EOF\n");
 				eof = true;
@@ -483,92 +482,5 @@ int main(int argc, char **argv){
 
 	xml_free(xml);
 	return 0;
-
-#else
-
-	XML_NodeTag items_tag;
-	XML_NodeAttributes items_attr;
-	if(!xml_read_node(xml, &items_tag, &items_attr)){
-		if(xml_error(xml)){
-			printf("%s\n", xml->errbuf);
-		}else{
-			printf("root node not found\n");
-		}
-		return -1;
-	}
-
-	if(!string_eq(items_tag.text, "items")){
-		printf("unexpected root node (expected = %s, got = %s)\n",
-			"items", items_tag.text);
-		return -1;
-	}
-
-	if(items_attr.num_attributes > 0){
-		printf("unexpected <items> attributes:\n");
-		for(i32 i = 0; i < items_attr.num_attributes; i += 1){
-			printf("    %s=\"%s\"\n",
-				items_attr.attributes[i].key,
-				items_attr.attributes[i].value);
-		}
-		return -1;
-	}
-
-	XML_NodeTag item_tag;
-	XML_NodeAttributes item_attr;
-	while(xml_read_node(xml, &item_tag, &item_attr)){
-		if(!string_eq(item_tag.text, "item")){
-			printf("unexpected <items> child <%s>\n", item_tag.text);
-			return -1;
-		}
-
-		// parse item_attr
-		printf("    <item ");
-		for(i32 i = 0; i < item_attr.num_attributes; i += 1){
-			printf("%s=\"%s\" ",
-				item_attr.attributes[i].key,
-				item_attr.attributes[i].value);
-		}
-		if(item_attr.self_closed)
-			printf("/>\n");
-		else
-			printf(">\n");
-
-		if(!item_attr.self_closed){
-			XML_NodeTag attr_tag;
-			XML_NodeAttributes attr_attr;
-			while(xml_read_node(xml, &attr_tag, &attr_attr)){
-				if(!string_eq(attr_tag.text, "attribute")){
-					printf("unexpected <item> child <%s>\n", attr_tag.text);
-					return -1;
-				}
-
-				// parse attr_attr
-				printf("        <attribute ");
-				for(i32 i = 0; i < attr_attr.num_attributes; i += 1){
-					printf("%s=\"%s\" ",
-						attr_attr.attributes[i].key,
-						attr_attr.attributes[i].value);
-				}
-				printf("/>\n");
-
-				if(!attr_attr.self_closed){
-					printf("unexpected not self_closed <attribute> node\n");
-					return -1;
-				}
-			}
-
-			printf("    </item>\n");
-			if(!xml_close_node(xml, &item_tag))
-				break;
-		}
-	}
-	xml_close_node(xml, &items_tag);
-
-	if(xml_error(xml)){
-		printf("%s\n", xml->errbuf);
-		return -1;
-	}
-
-	return 0;
-#endif
 }
+#endif

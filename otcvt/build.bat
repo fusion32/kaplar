@@ -3,7 +3,7 @@
 @SET CFLAGS=-W3 -WX -MTd -Zi -D_CRT_SECURE_NO_WARNINGS=1
 @SET LFLAGS=-subsystem:console -incremental:no -opt:ref -dynamicbase
 @SET LLIBS=
-@SET SRC="../common.cc" "../xml.cc"
+@SET SRC="../common.cc" "../xml.cc" "../items_stats.cc"
 
 pushd %~dp0
 del /q .\build\*

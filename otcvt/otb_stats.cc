@@ -105,6 +105,9 @@ enum OTB_ItemFlags : u32 {
 	OTB_FLAG_UNUSED = (1 << 21),
 	OTB_FLAG_CLIENT_CHARGES = (1 << 22),	// deprecated
 	OTB_FLAG_LOOKTHROUGH = (1 << 23),
+
+	OTB_FLAG_LAST = OTB_FLAG_LOOKTHROUGH,
+	OTB_FLAGS_MASK = (OTB_FLAG_LAST << 1) - 1,
 };
 
 struct OTB_LightInfo{
@@ -235,15 +238,145 @@ int main(int argc, char **argv){
 		return -1;
 	}
 
+	// group stats
+	i32 num_group_none = 0;
+	i32 num_group_ground = 0;
+	i32 num_group_container = 0;
+	i32 num_group_charges = 0;
+	i32 num_group_splash = 0;
+	i32 num_group_fluid = 0;
+	i32 num_group_deprecated = 0;
+	i32 num_group_other = 0;
+
+	// attrib stats
+	i32 num_attrib_server_id = 0;
+	i32 num_attrib_client_id = 0;
+	i32 num_attrib_speed = 0;
+	i32 num_attrib_sprite_hash = 0;
+	i32 num_attrib_minimap_color = 0;
+	i32 num_attrib_07 = 0;
+	i32 num_attrib_08 = 0;
+	i32 num_attrib_light = 0;
+	i32 num_attrib_light2 = 0;
+	i32 num_attrib_top_order = 0;
+	i32 num_attrib_other = 0;
+
+	// flag stats
+	i32 num_flag_block_solid = 0;
+	i32 num_flag_block_projectile = 0;
+	i32 num_flag_block_pathfind = 0;
+	i32 num_flag_has_height = 0;
+	i32 num_flag_useable = 0;
+	i32 num_flag_pickupable = 0;
+	i32 num_flag_moveable = 0;
+	i32 num_flag_stackable = 0;
+	i32 num_flag_floor_change_down = 0;
+	i32 num_flag_floor_change_north = 0;
+	i32 num_flag_floor_change_east = 0;
+	i32 num_flag_floor_change_south = 0;
+	i32 num_flag_floor_change_west = 0;
+	i32 num_flag_always_on_top = 0;
+	i32 num_flag_readable = 0;
+	i32 num_flag_rotable = 0;
+	i32 num_flag_hangable = 0;
+	i32 num_flag_vertical = 0;
+	i32 num_flag_horizontal = 0;
+	i32 num_flag_cannot_decay = 0;
+	i32 num_flag_allow_dist_read = 0;
+	i32 num_flag_unused = 0;
+	i32 num_flag_client_charges = 0;
+	i32 num_flag_lookthrough = 0;
+	i32 num_flag_other = 0;
+
+	// overall stats
 	u16 max_server_id = 0;
 	u16 max_client_id = 0;
 	u16 max_speed = 0;
 	u16 max_light_level = 0;
 	u16 max_light_color = 0;
 	u16 max_top_order = 0;
+
 	while(otb_read_u8(&otb) == OTB_NODE_START && otb_ok(&otb)){
 		u8 type = otb_read_u8(&otb);
 		u32 flags = otb_read_u32(&otb);
+
+		switch(type){
+			case OTB_GROUP_NONE:
+				num_group_none += 1;
+				break;
+			case OTB_GROUP_GROUND:
+				num_group_ground += 1;
+				break;
+			case OTB_GROUP_CONTAINER:
+				num_group_container += 1;
+				break;
+			case OTB_GROUP_CHARGES:
+				num_group_charges += 1;
+				break;
+			case OTB_GROUP_SPLASH:
+				num_group_splash += 1;
+				break;
+			case OTB_GROUP_FLUID:
+				num_group_fluid += 1;
+				break;
+			case OTB_GROUP_DEPRECATED:
+				num_group_deprecated += 1;
+				break;
+			default:
+				num_group_other += 1;
+				break;
+		}
+
+		if(flags & OTB_FLAG_BLOCK_SOLID)
+			num_flag_block_solid += 1;
+		if(flags & OTB_FLAG_BLOCK_PROJECTILE)
+			num_flag_block_projectile += 1;
+		if(flags & OTB_FLAG_BLOCK_PATHFIND)
+			num_flag_block_pathfind += 1;
+		if(flags & OTB_FLAG_HAS_HEIGHT)
+			num_flag_has_height += 1;
+		if(flags & OTB_FLAG_USEABLE)
+			num_flag_useable += 1;
+		if(flags & OTB_FLAG_PICKUPABLE)
+			num_flag_pickupable += 1;
+		if(flags & OTB_FLAG_MOVEABLE)
+			num_flag_moveable += 1;
+		if(flags & OTB_FLAG_STACKABLE)
+			num_flag_stackable += 1;
+		if(flags & OTB_FLAG_FLOOR_CHANGE_DOWN)
+			num_flag_floor_change_down += 1;
+		if(flags & OTB_FLAG_FLOOR_CHANGE_NORTH)
+			num_flag_floor_change_north += 1;
+		if(flags & OTB_FLAG_FLOOR_CHANGE_EAST)
+			num_flag_floor_change_east += 1;
+		if(flags & OTB_FLAG_FLOOR_CHANGE_SOUTH)
+			num_flag_floor_change_south += 1;
+		if(flags & OTB_FLAG_FLOOR_CHANGE_WEST)
+			num_flag_floor_change_west += 1;
+		if(flags & OTB_FLAG_ALWAYS_ON_TOP)
+			num_flag_always_on_top += 1;
+		if(flags & OTB_FLAG_READABLE)
+			num_flag_readable += 1;
+		if(flags & OTB_FLAG_ROTABLE)
+			num_flag_rotable += 1;
+		if(flags & OTB_FLAG_HANGABLE)
+			num_flag_hangable += 1;
+		if(flags & OTB_FLAG_VERTICAL)
+			num_flag_vertical += 1;
+		if(flags & OTB_FLAG_HORIZONTAL)
+			num_flag_horizontal += 1;
+		if(flags & OTB_FLAG_CANNOT_DECAY)
+			num_flag_cannot_decay += 1;
+		if(flags & OTB_FLAG_ALLOW_DIST_READ)
+			num_flag_allow_dist_read += 1;
+		if(flags & OTB_FLAG_UNUSED)
+			num_flag_unused += 1;
+		if(flags & OTB_FLAG_CLIENT_CHARGES)
+			num_flag_client_charges += 1;
+		if(flags & OTB_FLAG_LOOKTHROUGH)
+			num_flag_lookthrough += 1;
+		if(flags & ~OTB_FLAGS_MASK)
+			num_flag_other += 1;
 
 		u16 server_id = 0;
 		u16 client_id = 0;
@@ -251,7 +384,6 @@ int main(int argc, char **argv){
 		u16 light_level = 0;
 		u16 light_color = 0;
 		u8 top_order = 0;
-
 		while(otb_ok(&otb)){
 			u8 attrib = otb_read_u8(&otb);
 			if(attrib == OTB_NODE_END)
@@ -265,6 +397,7 @@ int main(int argc, char **argv){
 						return -1;
 					}
 					server_id = otb_read_u16(&otb);
+					num_attrib_server_id += 1;
 					break;
 				}
 
@@ -275,6 +408,7 @@ int main(int argc, char **argv){
 						return -1;
 					}
 					client_id = otb_read_u16(&otb);
+					num_attrib_client_id += 1;
 					break;
 				}
 
@@ -285,6 +419,7 @@ int main(int argc, char **argv){
 						return -1;
 					}
 					speed = otb_read_u16(&otb);
+					num_attrib_speed += 1;
 					break;
 				}
 
@@ -296,6 +431,7 @@ int main(int argc, char **argv){
 					}
 					light_level = otb_read_u16(&otb);
 					light_color = otb_read_u16(&otb);
+					num_attrib_light2 += 1;
 					break;
 				}
 
@@ -306,10 +442,32 @@ int main(int argc, char **argv){
 						return -1;
 					}
 					top_order = otb_read_u8(&otb);
+					num_attrib_top_order += 1;
 					break;
 				}
 
 				default: {
+					switch(attrib){
+						case OTB_ATTRIB_SPRITE_HASH:
+							num_attrib_sprite_hash += 1;
+							break;
+						case OTB_ATTRIB_MINIMAP_COLOR:
+							num_attrib_minimap_color += 1;
+							break;
+						case OTB_ATTRIB_07:
+							num_attrib_07 += 1;
+							break;
+						case OTB_ATTRIB_08:
+							num_attrib_08 += 1;
+							break;
+						case OTB_ATTRIB_LIGHT:
+							num_attrib_light += 1;
+							break;
+						default:
+							num_attrib_other += 1;
+							break;
+					}
+
 					otb_skip(&otb, attrib_size);
 					break;
 				}
@@ -328,21 +486,74 @@ int main(int argc, char **argv){
 			max_light_color = light_color;
 		if(top_order > max_top_order)
 			max_top_order = top_order;
-
-		printf("{0x%08X, %u, %u, %u, %u, %u, %u, %u},\n",
-			flags, server_id, client_id, speed, type, light_level, light_color, top_order);
 	}
-	printf("max_server_id = %u\n", max_server_id);
-	printf("max_client_id = %u\n", max_client_id);
-	printf("max_speed = %u\n", max_speed);
-	printf("max_light_level = %u\n", max_light_level);
-	printf("max_light_color = %u\n", max_light_color);
-	printf("max_top_order = %u\n", max_top_order);
 
 	// NOTE: Check that we parsed the whole file after removing escape codes
 	// and that the last byte is an OTB_NODE_END related to the root node.
 	if(otb.bufpos != otb.bufend || otb.buf[otb.bufpos - 1] != OTB_NODE_END)
 		printf("OTB file parsed but got unexpected file ending\n");
+
+	// group stats
+	printf("group stats:\n");
+	printf("\tnum_group_none = %d\n", num_group_none);
+	printf("\tnum_group_ground = %d\n", num_group_ground);
+	printf("\tnum_group_container = %d\n", num_group_container);
+	printf("\tnum_group_charges = %d\n", num_group_charges);
+	printf("\tnum_group_splash = %d\n", num_group_splash);
+	printf("\tnum_group_fluid = %d\n", num_group_fluid);
+	printf("\tnum_group_deprecated = %d\n", num_group_deprecated);
+	printf("\tnum_group_other = %d\n", num_group_other);
+
+	// attrib stats
+	printf("attrib stats:\n");
+	printf("\tnum_attrib_server_id = %d\n", num_attrib_server_id);
+	printf("\tnum_attrib_client_id = %d\n", num_attrib_client_id);
+	printf("\tnum_attrib_speed = %d\n", num_attrib_speed);
+	printf("\tnum_attrib_sprite_hash = %d\n", num_attrib_sprite_hash);
+	printf("\tnum_attrib_minimap_color = %d\n", num_attrib_minimap_color);
+	printf("\tnum_attrib_07 = %d\n", num_attrib_07);
+	printf("\tnum_attrib_08 = %d\n", num_attrib_08);
+	printf("\tnum_attrib_light = %d\n", num_attrib_light);
+	printf("\tnum_attrib_light2 = %d\n", num_attrib_light2);
+	printf("\tnum_attrib_top_order = %d\n", num_attrib_top_order);
+	printf("\tnum_attrib_other = %d\n", num_attrib_other);
+
+	// flag stats
+	printf("flag stats:\n");
+	printf("\tnum_flag_block_solid = %d\n", num_flag_block_solid);
+	printf("\tnum_flag_block_projectile = %d\n", num_flag_block_projectile);
+	printf("\tnum_flag_block_pathfind = %d\n", num_flag_block_pathfind);
+	printf("\tnum_flag_has_height = %d\n", num_flag_has_height);
+	printf("\tnum_flag_useable = %d\n", num_flag_useable);
+	printf("\tnum_flag_pickupable = %d\n", num_flag_pickupable);
+	printf("\tnum_flag_moveable = %d\n", num_flag_moveable);
+	printf("\tnum_flag_stackable = %d\n", num_flag_stackable);
+	printf("\tnum_flag_floor_change_down = %d\n", num_flag_floor_change_down);
+	printf("\tnum_flag_floor_change_north = %d\n", num_flag_floor_change_north);
+	printf("\tnum_flag_floor_change_east = %d\n", num_flag_floor_change_east);
+	printf("\tnum_flag_floor_change_south = %d\n", num_flag_floor_change_south);
+	printf("\tnum_flag_floor_change_west = %d\n", num_flag_floor_change_west);
+	printf("\tnum_flag_always_on_top = %d\n", num_flag_always_on_top);
+	printf("\tnum_flag_readable = %d\n", num_flag_readable);
+	printf("\tnum_flag_rotable = %d\n", num_flag_rotable);
+	printf("\tnum_flag_hangable = %d\n", num_flag_hangable);
+	printf("\tnum_flag_vertical = %d\n", num_flag_vertical);
+	printf("\tnum_flag_horizontal = %d\n", num_flag_horizontal);
+	printf("\tnum_flag_cannot_decay = %d\n", num_flag_cannot_decay);
+	printf("\tnum_flag_allow_dist_read = %d\n", num_flag_allow_dist_read);
+	printf("\tnum_flag_unused = %d\n", num_flag_unused);
+	printf("\tnum_flag_client_charges = %d\n", num_flag_client_charges);
+	printf("\tnum_flag_lookthrough = %d\n", num_flag_lookthrough);
+	printf("\tnum_flag_other = %d\n", num_flag_other);
+
+	// overall stats
+	printf("overall stats:\n");
+	printf("\tmax_server_id = %u\n", max_server_id);
+	printf("\tmax_client_id = %u\n", max_client_id);
+	printf("\tmax_speed = %u\n", max_speed);
+	printf("\tmax_light_level = %u\n", max_light_level);
+	printf("\tmax_light_color = %u\n", max_light_color);
+	printf("\tmax_top_order = %u\n", max_top_order);
 
 	return 0;
 }
