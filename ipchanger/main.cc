@@ -185,6 +185,17 @@ int main(int argc, char **argv){
 	v860.first_host_addr = (u8*)0x7947F8;
 	v860.first_port_addr = (u8*)0x79485C;
 
+	TibiaVersion v810;
+	v810.version_str = "Version 8.10";
+	v810.max_rsa_len = 312;
+	v810.max_host_len = 100;
+	v810.num_host_port_pairs = 10;
+	v810.host_port_stride = 112;
+	v810.version_addr = (u8*)0x61B64D;
+	v810.rsa_addr = (u8*)0x597610;
+	v810.first_host_addr = (u8*)0x763BB8;
+	v810.first_port_addr = (u8*)0x763C1C;
+
 	const char *opentibia_rsa =
 		"1091201329673994292788609605089955415282375029027981291234687579"
 		"3726629149257644633073969600111060390723088861007265581882535850"
@@ -192,7 +203,6 @@ int main(int argc, char **argv){
 		"6207862794310902180176810615217550567108238764764442605581471797"
 		"07119674283982419152118103759076030616683978566631413";
 
-
-	change_ip(&v860, host, port, opentibia_rsa);
+	change_ip(&v810, host, port, opentibia_rsa);
 	return 0;
 }

@@ -34,9 +34,9 @@ struct LoginServer{
 };
 
 static
-Login *get_connection_login(LoginServer *lserver, i32 connection){
-	ASSERT(connection >= 0 && connection < lserver->max_logins);
-	return &lserver->logins[connection];
+Login *lserver_get_login(LoginServer *lserver, u32 index){
+	ASSERT(index < (u32)lserver->max_logins);
+	return &lserver->logins[index];
 }
 
 static
@@ -124,31 +124,25 @@ void send_charlist(Login *login){
 }
 
 static
-void login_server_on_accept(void *userdata, i32 connection){
-	LOG("%08X", connection);
-
+void login_server_on_accept(void *userdata, u32 index){
 	LoginServer *lserver = (LoginServer*)userdata;
-	Login *login = get_connection_login(lserver, connection);
+	Login *login = lserver_get_login(lserver, index);
 	login->state = LOGIN_STATE_READING;
 }
 
 static
-void login_server_on_drop(void *userdata, i32 connection){
-	LOG("%08X", connection);
-
+void login_server_on_drop(void *userdata, u32 index){
 	LoginServer *lserver = (LoginServer*)userdata;
-	Login *login = get_connection_login(lserver, connection);
+	Login *login = lserver_get_login(lserver, index);
 	// NOTE: Zero out login memory because it may contain sensible information.
 	memset(login, 0, sizeof(Login));
 }
 
 static
-void login_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen){
-	LOG("%08X", connection);
-
+void login_server_on_read(void *userdata, u32 index, u8 *data, i32 datalen){
 	LoginServer *lserver = (LoginServer*)userdata;
 	RSA *rsa = lserver->rsa;
-	Login *login = get_connection_login(lserver, connection);
+	Login *login = lserver_get_login(lserver, index);
 
 	if(login->state != LOGIN_STATE_READING){
 		LOG_ERROR("unexpected message");
@@ -233,11 +227,9 @@ void login_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen)
 
 static
 void login_server_request_output(void *userdata,
-		i32 connection, u8 **output, i32 *output_len){
-	LOG("%08X", connection);
-
+		u32 index, u8 **output, i32 *output_len){
 	LoginServer *lserver = (LoginServer*)userdata;
-	Login *login = get_connection_login(lserver, connection);
+	Login *login = lserver_get_login(lserver, index);
 	if(login->state == LOGIN_STATE_WRITING){
 		*output = login->writebuf;
 		*output_len = login->writelen;
@@ -249,21 +241,23 @@ void login_server_request_output(void *userdata,
 }
 
 static
-void login_server_request_status(void *userdata, i32 connection, ConnectionStatus *out_status){
+void login_server_request_status(void *userdata, u32 index, ConnectionStatus *out_status){
 	LoginServer *lserver = (LoginServer*)userdata;
-	Login *login = get_connection_login(lserver, connection);
+	Login *login = lserver_get_login(lserver, index);
 	if(login->state == LOGIN_STATE_DISCONNECTING)
 		*out_status = CONNECTION_STATUS_CLOSING;
 }
 
 // ----------------------------------------------------------------
 
-LoginServer *login_server_init(MemArena *arena,
-		RSA *server_rsa, u16 port, u16 max_connections){
+LoginServer *login_server_init(MemArena *arena, Config *cfg, RSA *login_rsa){
+	u16 port = cfg->login_port;
+	u16 max_connections = cfg->login_max_connections;
+
 	LoginServer *lserver = arena_alloc<LoginServer>(arena, 1);
 	lserver->max_logins = max_connections;
 	lserver->logins = arena_alloc<Login>(arena, max_connections);
-	lserver->rsa = server_rsa;
+	lserver->rsa = login_rsa;
 
 	ServerParams server_params;
 	server_params.port = port;

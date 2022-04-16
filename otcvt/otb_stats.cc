@@ -289,6 +289,7 @@ int main(int argc, char **argv){
 	i32 num_flag_other = 0;
 
 	// overall stats
+	i32 num_nodes = 0;
 	u16 max_server_id = 0;
 	u16 max_client_id = 0;
 	u16 max_speed = 0;
@@ -486,6 +487,8 @@ int main(int argc, char **argv){
 			max_light_color = light_color;
 		if(top_order > max_top_order)
 			max_top_order = top_order;
+
+		num_nodes += 1;
 	}
 
 	// NOTE: Check that we parsed the whole file after removing escape codes
@@ -548,6 +551,7 @@ int main(int argc, char **argv){
 
 	// overall stats
 	printf("overall stats:\n");
+	printf("\tnum_nodes = %d\n", num_nodes);
 	printf("\tmax_server_id = %u\n", max_server_id);
 	printf("\tmax_client_id = %u\n", max_client_id);
 	printf("\tmax_speed = %u\n", max_speed);

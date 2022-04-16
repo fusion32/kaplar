@@ -1,7 +1,7 @@
 #include "common.hh"
 #include "crypto.hh"
+#include "game.hh"
 #include "login_server.hh"
-#include "game_server.hh"
 
 static
 RSA *rsa_default_init(void){
@@ -69,27 +69,40 @@ int kpl_main(int argc, char **argv){
 #else
 int main(int argc, char **argv){
 #endif
-	// TODO: Move these to a configuration file.
-	usize arena_vsize = 0x100000000ULL; // ~4GB
-	usize arena_granularity = 0x00400000UL; // ~4MB
+	// TODO: Load these from a config file.
+	Config cfg = {};
+	cfg.arena_vsize = 0x100000000ULL; // ~4GB
+	cfg.arena_granularity = 0x00400000UL; // ~4MB
+
+	cfg.login_port = 7171;
+	cfg.login_max_connections = 10;
+
+	cfg.game_port = 7172;
+	cfg.game_max_connections = 100;
 	// game frame interval in milliseconds:
 	//	16 is ~60fps
 	//	33 is ~30fps
 	//	66 is ~15fps
-	i64 game_frame_interval = 33;
+	cfg.game_frame_interval = 33;
 
+	usize arena_vsize = cfg.arena_vsize;
+	usize arena_granularity = cfg.arena_granularity;
+	i64 game_frame_interval = cfg.game_frame_interval;
 
 	MemArena *arena = arena_init(arena_vsize, arena_granularity);
-	RSA *server_rsa = rsa_default_init();
-	LoginServer *lserver = login_server_init(arena, server_rsa, 7171, 10);
-	GameServer *gserver = game_server_init(arena, server_rsa, 7172, 100);
+
+	// TODO: Load RSA key from PEM file given by the CFG.
+	RSA *login_rsa = rsa_default_init();
+	RSA *game_rsa = login_rsa;
+	LoginServer *lserver = login_server_init(arena, &cfg, login_rsa);
+	Game *game = game_init(arena, &cfg, game_rsa);
 
 	while(1){
 		i64 frame_start = sys_clock_monotonic_msec();
 		i64 next_frame = frame_start + game_frame_interval;
 
 		login_server_poll(lserver);
-		game_server_poll(gserver);
+		game_update(game);
 
 		i64 frame_end = sys_clock_monotonic_msec();
 		if(frame_end < next_frame)

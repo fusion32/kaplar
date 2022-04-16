@@ -1,5 +1,4 @@
 // NOTE: All item attributes taken from "opentibia/src/items.cpp":
-//
 //type
 //name
 //article
@@ -101,6 +100,20 @@
 //currency
 
 #include "xml.hh"
+
+bool recursive_close_node(XML_State *xml, XML_NodeTag *tag, XML_NodeAttributes *attr){
+	if(!attr->self_closed){
+		XML_NodeTag child_tag;
+		XML_NodeAttributes child_attr;
+		while(xml_read_node(xml, &child_tag, &child_attr)){
+			if(!recursive_close_node(xml, &child_tag, &child_attr))
+				return false;
+		}
+		if(!xml_close_node(xml, tag))
+			return false;
+	}
+	return true;
+}
 
 int main(int argc, char **argv){
 	const char *filename = "items.xml";
@@ -250,6 +263,9 @@ int main(int argc, char **argv){
 	i32 num_item_attr_currency = 0;
 	i32 num_item_attr_other = 0;
 
+	// overall stats
+	i32 num_items = 0;
+	i32 num_items_w_attr = 0;
 
 	char aslower[256];
 	XML_NodeTag item_tag;
@@ -277,6 +293,7 @@ int main(int argc, char **argv){
 				num_node_attr_other += 1;
 		}
 
+		bool has_attr = false;
 		if(!item_attr.self_closed){
 			XML_NodeTag attr_tag;
 			XML_NodeAttributes attr_attr;
@@ -286,6 +303,7 @@ int main(int argc, char **argv){
 					return -1;
 				}
 
+				has_attr = true;
 				for(i32 i = 0; i < attr_attr.num_attributes; i += 1){
 					string_ascii_tolower(aslower, sizeof(aslower),
 						attr_attr.attributes[i].key);
@@ -497,8 +515,11 @@ int main(int argc, char **argv){
 						num_item_attr_other += 1;
 				}
 
-				if(!attr_attr.self_closed){
-					printf("unexpected not self_closed <attribute> node\n");
+				// NOTE: I tried to run item.xml from TFS and they have some
+				// attribute nodes that have children nodes. So this will skip
+				// all children nodes and find the closing tag.
+				if(!recursive_close_node(xml, &attr_tag, &attr_attr)){
+					printf("unable to close attribute node\n");
 					return -1;
 				}
 			}
@@ -506,6 +527,10 @@ int main(int argc, char **argv){
 			if(!xml_close_node(xml, &item_tag))
 				break;
 		}
+
+		num_items += 1;
+		if(has_attr)
+			num_items_w_attr += 1;
 	}
 	xml_close_node(xml, &items_tag);
 
@@ -514,117 +539,124 @@ int main(int argc, char **argv){
 		return -1;
 	}
 
+	#define PRINT_STAT(x) \
+		printf("\t%-40s\t%d\t%g%%\n", #x, (x), (x * 100.0) / num_items)
+
+	// overall stats
+	printf("overall stats:\n");
+	PRINT_STAT(num_items);
+	PRINT_STAT(num_items_w_attr);
+
 	// item node attr stats
 	printf("item node attr stats:\n");
-	printf("\tnum_node_attr_id = %d\n", num_node_attr_id);
-	printf("\tnum_node_attr_name = %d\n", num_node_attr_name);
-	printf("\tnum_node_attr_article = %d\n", num_node_attr_article);
-	printf("\tnum_node_attr_plural = %d\n", num_node_attr_plural);
-	printf("\tnum_node_attr_editorsuffix = %d\n", num_node_attr_editorsuffix);
-	printf("\tnum_node_attr_other = %d\n", num_node_attr_other);
+	PRINT_STAT(num_node_attr_id);
+	PRINT_STAT(num_node_attr_name);
+	PRINT_STAT(num_node_attr_article);
+	PRINT_STAT(num_node_attr_plural);
+	PRINT_STAT(num_node_attr_editorsuffix);
+	PRINT_STAT(num_node_attr_other);
 
 	// item attr stats
 	printf("item attr stats:\n");
-	printf("\tnum_item_attr_type = %d\n", num_item_attr_type);
-	printf("\tnum_item_attr_name = %d\n", num_item_attr_name);
-	printf("\tnum_item_attr_article = %d\n", num_item_attr_article);
-	printf("\tnum_item_attr_plural = %d\n", num_item_attr_plural);
-	printf("\tnum_item_attr_description = %d\n", num_item_attr_description);
-	printf("\tnum_item_attr_runespellname = %d\n", num_item_attr_runespellname);
-	printf("\tnum_item_attr_weight = %d\n", num_item_attr_weight);
-	printf("\tnum_item_attr_showcount = %d\n", num_item_attr_showcount);
-	printf("\tnum_item_attr_armor = %d\n", num_item_attr_armor);
-	printf("\tnum_item_attr_defense = %d\n", num_item_attr_defense);
-	printf("\tnum_item_attr_extradef = %d\n", num_item_attr_extradef);
-	printf("\tnum_item_attr_attack = %d\n", num_item_attr_attack);
-	printf("\tnum_item_attr_rotateto = %d\n", num_item_attr_rotateto);
-	printf("\tnum_item_attr_moveable = %d\n", num_item_attr_moveable);
-	printf("\tnum_item_attr_blockprojectile = %d\n", num_item_attr_blockprojectile);
-	printf("\tnum_item_attr_pickupable = %d\n", num_item_attr_pickupable);
-	printf("\tnum_item_attr_allowpickupable = %d\n", num_item_attr_allowpickupable);
-	printf("\tnum_item_attr_floorchange = %d\n", num_item_attr_floorchange);
-	printf("\tnum_item_attr_corpsetype = %d\n", num_item_attr_corpsetype);
-	printf("\tnum_item_attr_containersize = %d\n", num_item_attr_containersize);
-	printf("\tnum_item_attr_fluidsource = %d\n", num_item_attr_fluidsource);
-	printf("\tnum_item_attr_readable = %d\n", num_item_attr_readable);
-	printf("\tnum_item_attr_writeable = %d\n", num_item_attr_writeable);
-	printf("\tnum_item_attr_maxtextlen = %d\n", num_item_attr_maxtextlen);
-	printf("\tnum_item_attr_writeonceitemid = %d\n", num_item_attr_writeonceitemid);
-	printf("\tnum_item_attr_weapontype = %d\n", num_item_attr_weapontype);
-	printf("\tnum_item_attr_slottype = %d\n", num_item_attr_slottype);
-	printf("\tnum_item_attr_ammotype = %d\n", num_item_attr_ammotype);
-	printf("\tnum_item_attr_shoottype = %d\n", num_item_attr_shoottype);
-	printf("\tnum_item_attr_effect = %d\n", num_item_attr_effect);
-	printf("\tnum_item_attr_range = %d\n", num_item_attr_range);
-	printf("\tnum_item_attr_stopduration = %d\n", num_item_attr_stopduration);
-	printf("\tnum_item_attr_decayto = %d\n", num_item_attr_decayto);
-	printf("\tnum_item_attr_transformequipto = %d\n", num_item_attr_transformequipto);
-	printf("\tnum_item_attr_transformdeequipto = %d\n", num_item_attr_transformdeequipto);
-	printf("\tnum_item_attr_duration = %d\n", num_item_attr_duration);
-	printf("\tnum_item_attr_showduration = %d\n", num_item_attr_showduration);
-	printf("\tnum_item_attr_charges = %d\n", num_item_attr_charges);
-	printf("\tnum_item_attr_showcharges = %d\n", num_item_attr_showcharges);
-	printf("\tnum_item_attr_breakchance = %d\n", num_item_attr_breakchance);
-	printf("\tnum_item_attr_ammoaction = %d\n", num_item_attr_ammoaction);
-	printf("\tnum_item_attr_hitchance = %d\n", num_item_attr_hitchance);
-	printf("\tnum_item_attr_maxhitchance = %d\n", num_item_attr_maxhitchance);
-	printf("\tnum_item_attr_invisible = %d\n", num_item_attr_invisible);
-	printf("\tnum_item_attr_speed = %d\n", num_item_attr_speed);
-	printf("\tnum_item_attr_healthgain = %d\n", num_item_attr_healthgain);
-	printf("\tnum_item_attr_healthticks = %d\n", num_item_attr_healthticks);
-	printf("\tnum_item_attr_managain = %d\n", num_item_attr_managain);
-	printf("\tnum_item_attr_manaticks = %d\n", num_item_attr_manaticks);
-	printf("\tnum_item_attr_manashield = %d\n", num_item_attr_manashield);
-	printf("\tnum_item_attr_skillsword = %d\n", num_item_attr_skillsword);
-	printf("\tnum_item_attr_skillaxe = %d\n", num_item_attr_skillaxe);
-	printf("\tnum_item_attr_skillclub = %d\n", num_item_attr_skillclub);
-	printf("\tnum_item_attr_skilldist = %d\n", num_item_attr_skilldist);
-	printf("\tnum_item_attr_skillfish = %d\n", num_item_attr_skillfish);
-	printf("\tnum_item_attr_skillshield = %d\n", num_item_attr_skillshield);
-	printf("\tnum_item_attr_skillfist = %d\n", num_item_attr_skillfist);
-	printf("\tnum_item_attr_maxhitpoints = %d\n", num_item_attr_maxhitpoints);
-	printf("\tnum_item_attr_maxhitpointspercent = %d\n", num_item_attr_maxhitpointspercent);
-	printf("\tnum_item_attr_maxmanapoints = %d\n", num_item_attr_maxmanapoints);
-	printf("\tnum_item_attr_maxmanapointspercent = %d\n", num_item_attr_maxmanapointspercent);
-	printf("\tnum_item_attr_soulpoints = %d\n", num_item_attr_soulpoints);
-	printf("\tnum_item_attr_soulpointspercent = %d\n", num_item_attr_soulpointspercent);
-	printf("\tnum_item_attr_magicpoints = %d\n", num_item_attr_magicpoints);
-	printf("\tnum_item_attr_magicpointspercent = %d\n", num_item_attr_magicpointspercent);
-	printf("\tnum_item_attr_absorbpercentall = %d\n", num_item_attr_absorbpercentall);
-	printf("\tnum_item_attr_absorbpercentallelements = %d\n", num_item_attr_absorbpercentallelements);
-	printf("\tnum_item_attr_absorbpercentenergy = %d\n", num_item_attr_absorbpercentenergy);
-	printf("\tnum_item_attr_absorbpercentfire = %d\n", num_item_attr_absorbpercentfire);
-	printf("\tnum_item_attr_absorbpercentpoison = %d\n", num_item_attr_absorbpercentpoison);
-	printf("\tnum_item_attr_absorbpercentearth = %d\n", num_item_attr_absorbpercentearth);
-	printf("\tnum_item_attr_absorbpercentice = %d\n", num_item_attr_absorbpercentice);
-	printf("\tnum_item_attr_absorbpercentholy = %d\n", num_item_attr_absorbpercentholy);
-	printf("\tnum_item_attr_absorbpercentdeath = %d\n", num_item_attr_absorbpercentdeath);
-	printf("\tnum_item_attr_absorbpercentlifedrain = %d\n", num_item_attr_absorbpercentlifedrain);
-	printf("\tnum_item_attr_absorbpercentmanadrain = %d\n", num_item_attr_absorbpercentmanadrain);
-	printf("\tnum_item_attr_absorbpercentdrown = %d\n", num_item_attr_absorbpercentdrown);
-	printf("\tnum_item_attr_absorbpercentphysical = %d\n", num_item_attr_absorbpercentphysical);
-	printf("\tnum_item_attr_suppressdrunk = %d\n", num_item_attr_suppressdrunk);
-	printf("\tnum_item_attr_suppressenergy = %d\n", num_item_attr_suppressenergy);
-	printf("\tnum_item_attr_suppressfire = %d\n", num_item_attr_suppressfire);
-	printf("\tnum_item_attr_suppresspoison = %d\n", num_item_attr_suppresspoison);
-	printf("\tnum_item_attr_suppressdrown = %d\n", num_item_attr_suppressdrown);
-	printf("\tnum_item_attr_suppressfreeze = %d\n", num_item_attr_suppressfreeze);
-	printf("\tnum_item_attr_suppressdazzle = %d\n", num_item_attr_suppressdazzle);
-	printf("\tnum_item_attr_suppresscurse = %d\n", num_item_attr_suppresscurse);
-	printf("\tnum_item_attr_preventitemloss = %d\n", num_item_attr_preventitemloss);
-	printf("\tnum_item_attr_preventskillloss = %d\n", num_item_attr_preventskillloss);
-	printf("\tnum_item_attr_combattype = %d\n", num_item_attr_combattype);
-	printf("\tnum_item_attr_replaceable = %d\n", num_item_attr_replaceable);
-	printf("\tnum_item_attr_partnerdirection = %d\n", num_item_attr_partnerdirection);
-	printf("\tnum_item_attr_malesleeper = %d\n", num_item_attr_malesleeper);
-	printf("\tnum_item_attr_femalesleeper = %d\n", num_item_attr_femalesleeper);
-	printf("\tnum_item_attr_nosleeper = %d\n", num_item_attr_nosleeper);
-	printf("\tnum_item_attr_elementice = %d\n", num_item_attr_elementice);
-	printf("\tnum_item_attr_elementearth = %d\n", num_item_attr_elementearth);
-	printf("\tnum_item_attr_elementfire = %d\n", num_item_attr_elementfire);
-	printf("\tnum_item_attr_elementenergy = %d\n", num_item_attr_elementenergy);
-	printf("\tnum_item_attr_currency = %d\n", num_item_attr_currency);
-	printf("\tnum_item_attr_other = %d\n", num_item_attr_other);
-
+	PRINT_STAT(num_item_attr_type);
+	PRINT_STAT(num_item_attr_name);
+	PRINT_STAT(num_item_attr_article);
+	PRINT_STAT(num_item_attr_plural);
+	PRINT_STAT(num_item_attr_description);
+	PRINT_STAT(num_item_attr_runespellname);
+	PRINT_STAT(num_item_attr_weight);
+	PRINT_STAT(num_item_attr_showcount);
+	PRINT_STAT(num_item_attr_armor);
+	PRINT_STAT(num_item_attr_defense);
+	PRINT_STAT(num_item_attr_extradef);
+	PRINT_STAT(num_item_attr_attack);
+	PRINT_STAT(num_item_attr_rotateto);
+	PRINT_STAT(num_item_attr_moveable);
+	PRINT_STAT(num_item_attr_blockprojectile);
+	PRINT_STAT(num_item_attr_pickupable);
+	PRINT_STAT(num_item_attr_allowpickupable);
+	PRINT_STAT(num_item_attr_floorchange);
+	PRINT_STAT(num_item_attr_corpsetype);
+	PRINT_STAT(num_item_attr_containersize);
+	PRINT_STAT(num_item_attr_fluidsource);
+	PRINT_STAT(num_item_attr_readable);
+	PRINT_STAT(num_item_attr_writeable);
+	PRINT_STAT(num_item_attr_maxtextlen);
+	PRINT_STAT(num_item_attr_writeonceitemid);
+	PRINT_STAT(num_item_attr_weapontype);
+	PRINT_STAT(num_item_attr_slottype);
+	PRINT_STAT(num_item_attr_ammotype);
+	PRINT_STAT(num_item_attr_shoottype);
+	PRINT_STAT(num_item_attr_effect);
+	PRINT_STAT(num_item_attr_range);
+	PRINT_STAT(num_item_attr_stopduration);
+	PRINT_STAT(num_item_attr_decayto);
+	PRINT_STAT(num_item_attr_transformequipto);
+	PRINT_STAT(num_item_attr_transformdeequipto);
+	PRINT_STAT(num_item_attr_duration);
+	PRINT_STAT(num_item_attr_showduration);
+	PRINT_STAT(num_item_attr_charges);
+	PRINT_STAT(num_item_attr_showcharges);
+	PRINT_STAT(num_item_attr_breakchance);
+	PRINT_STAT(num_item_attr_ammoaction);
+	PRINT_STAT(num_item_attr_hitchance);
+	PRINT_STAT(num_item_attr_maxhitchance);
+	PRINT_STAT(num_item_attr_invisible);
+	PRINT_STAT(num_item_attr_speed);
+	PRINT_STAT(num_item_attr_healthgain);
+	PRINT_STAT(num_item_attr_healthticks);
+	PRINT_STAT(num_item_attr_managain);
+	PRINT_STAT(num_item_attr_manaticks);
+	PRINT_STAT(num_item_attr_manashield);
+	PRINT_STAT(num_item_attr_skillsword);
+	PRINT_STAT(num_item_attr_skillaxe);
+	PRINT_STAT(num_item_attr_skillclub);
+	PRINT_STAT(num_item_attr_skilldist);
+	PRINT_STAT(num_item_attr_skillfish);
+	PRINT_STAT(num_item_attr_skillshield);
+	PRINT_STAT(num_item_attr_skillfist);
+	PRINT_STAT(num_item_attr_maxhitpoints);
+	PRINT_STAT(num_item_attr_maxhitpointspercent);
+	PRINT_STAT(num_item_attr_maxmanapoints);
+	PRINT_STAT(num_item_attr_maxmanapointspercent);
+	PRINT_STAT(num_item_attr_soulpoints);
+	PRINT_STAT(num_item_attr_soulpointspercent);
+	PRINT_STAT(num_item_attr_magicpoints);
+	PRINT_STAT(num_item_attr_magicpointspercent);
+	PRINT_STAT(num_item_attr_absorbpercentall);
+	PRINT_STAT(num_item_attr_absorbpercentallelements);
+	PRINT_STAT(num_item_attr_absorbpercentenergy);
+	PRINT_STAT(num_item_attr_absorbpercentfire);
+	PRINT_STAT(num_item_attr_absorbpercentpoison);
+	PRINT_STAT(num_item_attr_absorbpercentearth);
+	PRINT_STAT(num_item_attr_absorbpercentice);
+	PRINT_STAT(num_item_attr_absorbpercentholy);
+	PRINT_STAT(num_item_attr_absorbpercentdeath);
+	PRINT_STAT(num_item_attr_absorbpercentlifedrain);
+	PRINT_STAT(num_item_attr_absorbpercentmanadrain);
+	PRINT_STAT(num_item_attr_absorbpercentdrown);
+	PRINT_STAT(num_item_attr_absorbpercentphysical);
+	PRINT_STAT(num_item_attr_suppressdrunk);
+	PRINT_STAT(num_item_attr_suppressenergy);
+	PRINT_STAT(num_item_attr_suppressfire);
+	PRINT_STAT(num_item_attr_suppresspoison);
+	PRINT_STAT(num_item_attr_suppressdrown);
+	PRINT_STAT(num_item_attr_suppressfreeze);
+	PRINT_STAT(num_item_attr_suppressdazzle);
+	PRINT_STAT(num_item_attr_suppresscurse);
+	PRINT_STAT(num_item_attr_preventitemloss);
+	PRINT_STAT(num_item_attr_preventskillloss);
+	PRINT_STAT(num_item_attr_combattype);
+	PRINT_STAT(num_item_attr_replaceable);
+	PRINT_STAT(num_item_attr_partnerdirection);
+	PRINT_STAT(num_item_attr_malesleeper);
+	PRINT_STAT(num_item_attr_femalesleeper);
+	PRINT_STAT(num_item_attr_nosleeper);
+	PRINT_STAT(num_item_attr_elementice);
+	PRINT_STAT(num_item_attr_elementearth);
+	PRINT_STAT(num_item_attr_elementfire);
+	PRINT_STAT(num_item_attr_elementenergy);
+	PRINT_STAT(num_item_attr_currency);
+	PRINT_STAT(num_item_attr_other);
 	return 0;
 }

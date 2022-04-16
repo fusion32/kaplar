@@ -6,7 +6,7 @@
 // ----------------------------------------------------------------
 
 // ensure we're compiling in 64bit
-static_assert(sizeof(void*) == 8, "");
+static_assert(sizeof(void*) == 8, "sizeof(void*) != 8");
 
 // stdlib base
 #include <stdarg.h>
@@ -87,7 +87,7 @@ MemArena *arena_init(usize virtual_size, usize granularity);
 
 template<typename T>
 constexpr void type_alignment_check(void){
-	static_assert((sizeof(T) & (alignof(T) - 1)) == 0, "");
+	static_assert((sizeof(T) & (alignof(T) - 1)) == 0, "type alignment check failed");
 }
 
 template<typename T>
@@ -105,6 +105,7 @@ template<typename T>
 static INLINE T *arena_allocz(MemArena *arena, usize num){
 	T *result = arena_alloc<T>(arena, num);
 	memset(result, 0, sizeof(T) * num);
+	return result;
 }
 
 // ----------------------------------------------------------------
@@ -125,5 +126,24 @@ void debug_print_buf_hex(char *debug_name, u8 *buf, i32 buflen);
 // File Utility
 // ----------------------------------------------------------------
 u8 *read_entire_file(MemArena *arena, const char *filename, i32 *out_size);
+
+// ----------------------------------------------------------------
+// Config
+// ----------------------------------------------------------------
+struct Config{
+	usize arena_vsize;
+	usize arena_granularity;
+
+	//const char *login_rsa_pem_file;
+	u16 login_port;
+	u16 login_max_connections;
+
+	//const char *game_rsa_pem_file;
+	const char *game_world_file;
+	//const char *game_client_data_file;
+	u16 game_port;
+	u16 game_max_connections;
+	i64 game_frame_interval;
+};
 
 #endif //KAPLAR_COMMON_HH_

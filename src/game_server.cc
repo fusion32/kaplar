@@ -1,15 +1,15 @@
-#include "game_server.hh"
+#include "game.hh"
 
 #include "common.hh"
 #include "crypto.hh"
 #include "packet.hh"
 #include "server.hh"
 
-enum ClientState : u32 {
+enum ClientState : u16 {
 	CLIENT_STATE_HANDSHAKE_WRITING = 0,
 	CLIENT_STATE_HANDSHAKE_WAITING_WRITE,
 	CLIENT_STATE_HANDSHAKE_READING,
-	//CLIENT_STATE_HANDSHAKE_WAITING_DATABASE,
+	//CLIENT_STATE_HANDSHAKE_AUTHENTICATING,
 	CLIENT_STATE_NORMAL,
 	CLIENT_STATE_DISCONNECT_WRITING,
 	CLIENT_STATE_DISCONNECT_WAITING_WRITE,
@@ -17,13 +17,16 @@ enum ClientState : u32 {
 };
 
 struct Client{
+	// NOTE: The counter isn't initialized anywhere and it
+	// doesn't really matter what it gets initialized to.
+	u16 counter;
 	ClientState state;
 	u32 xtea[4];
 	char accname[32];
 	char password[32];
 	char character[32];
 
-	// TODO: Instead of a single write buffer like in the
+	// NOTE: Instead of a single write buffer like in the
 	// login server, we need at least two buffers to avoid
 	// not having where to write a client message and thus
 	// having to drop the connection.
@@ -51,24 +54,37 @@ struct Client{
 	OutPacket *out_queue_tail;
 };
 
-struct GameServer{
-	i32 max_clients;
-	Client *clients;
-	RSA *rsa;
-	Server *server;
-	MemArena *output_arena;
-	OutPacket *output_head;
-};
+
+// NOTE: The purpose of these ids is to avoid accessing dropped connections
+// or newly assigned connections to a certain connection slot.
+//	Without them, we risk running into a scenario where a connection is
+// dropped, a new one is accepted in the same slot, and a previous drop/send
+// request would be issued to the wrong connection.
+u32 make_client_id(u16 counter, u16 index){
+	return ((u32)counter << 16) | (u32)index;
+}
 
 static
-Client *get_connection_client(GameServer *gserver, i32 connection){
-	ASSERT(connection >= 0 && connection < gserver->max_clients);
-	return &gserver->clients[connection];
+Client *game_get_client_by_index(Game *game, u16 index){
+	ASSERT(index < game->max_clients);
+	return &game->clients[index];
+}
+
+Client *game_get_client(Game *game, u32 client_id){
+	u16 index = (u16)(client_id & 0xFFFF);
+	u16 counter = (u16)((client_id >> 16) & 0xFFFF);
+
+	ASSERT(index < game->max_clients);
+	Client *client = &game->clients[index];
+	if(client->counter ^ counter)
+		return NULL;
+	return client;
 }
 
 #define OUT_PACKET_BUFFER_SIZE (16 * 1024)
 
-OutPacket *get_out_packet(GameServer *gserver, Client *client, u32 size){
+static
+OutPacket *get_out_packet(Game *game, Client *client, u32 size){
 	ASSERT((client->out_queue_head != NULL && client->out_queue_tail != NULL)
 		|| (client->out_queue_head == NULL && client->out_queue_tail == NULL));
 
@@ -81,11 +97,11 @@ OutPacket *get_out_packet(GameServer *gserver, Client *client, u32 size){
 	}
 
 	OutPacket *outp;
-	if(gserver->output_head){
-		outp = gserver->output_head;
-		gserver->output_head = outp->next;
+	if(game->output_head){
+		outp = game->output_head;
+		game->output_head = outp->next;
 	}else{
-		MemArena *output_arena = gserver->output_arena;
+		MemArena *output_arena = game->output_arena;
 		outp = arena_alloc<OutPacket>(output_arena, 1);
 		outp->buf = arena_alloc<u8>(output_arena, OUT_PACKET_BUFFER_SIZE);
 		outp->bufend = OUT_PACKET_BUFFER_SIZE;
@@ -103,11 +119,12 @@ OutPacket *get_out_packet(GameServer *gserver, Client *client, u32 size){
 	return outp;
 }
 
-void release_out_packet(GameServer *gserver, OutPacket *outp){
+static
+void release_out_packet(Game *game, OutPacket *outp){
 	ASSERT(outp);
 	ASSERT(outp->bufend == OUT_PACKET_BUFFER_SIZE);
-	outp->next = gserver->output_head;
-	gserver->output_head = outp;
+	outp->next = game->output_head;
+	game->output_head = outp;
 }
 
 static
@@ -186,19 +203,19 @@ void disconnect(Client *client){
 }
 
 static
-void send_disconnect(GameServer *gserver, Client *client, const char *message){
+void send_disconnect(Game *game, Client *client, const char *message){
 	client->state = CLIENT_STATE_DISCONNECT_WRITING;
 
-	OutPacket *p = get_out_packet(gserver, client, 256);
+	OutPacket *p = get_out_packet(game, client, 256);
 	packet_write_u8(p, 0x14);
 	packet_write_str(p, message);
 }
 
 static
-void send_login(GameServer *gserver, Client *client){
+void send_login(Game *game, Client *client){
 	client->state = CLIENT_STATE_NORMAL;
 
-	OutPacket *p = get_out_packet(gserver, client, 0);
+	OutPacket *p = get_out_packet(game, client, 0);
 
 	// NOTE: The comments on the side are old annotations from another
 	// implementation I did that I didn't check. So they may/will be wrong.
@@ -320,8 +337,8 @@ void send_login(GameServer *gserver, Client *client){
 }
 
 static
-void send_inventory(GameServer *gserver, Client *client, u8 slot, u16 client_id){
-	OutPacket *p = get_out_packet(gserver, client, 4);
+void send_inventory_item(Game *game, Client *client, u8 slot, u16 client_id){
+	OutPacket *p = get_out_packet(game, client, 4);
 	packet_write_u8(p, 0x78);
 	packet_write_u8(p, slot);
 	packet_write_u16(p, client_id);
@@ -334,16 +351,17 @@ void send_inventory(GameServer *gserver, Client *client, u8 slot, u16 client_id)
 }
 
 static
-void send_relogin_window(GameServer *gserver, Client *client){
-	OutPacket *p = get_out_packet(gserver, client, 1);
+void send_relogin_window(Game *game, Client *client){
+	OutPacket *p = get_out_packet(game, client, 1);
 	packet_write_u8(p, 0x28);
 }
 
+// ----------------------------------------------------------------
+
 static
-void game_server_on_accept(void *userdata, i32 connection){
-	LOG("%08X", connection);
-	GameServer *gserver = (GameServer*)userdata;
-	Client *client = get_connection_client(gserver, connection);
+void game_on_accept(void *userdata, u32 index){
+	Game *game = (Game*)userdata;
+	Client *client = game_get_client_by_index(game, index);
 	client->state = CLIENT_STATE_HANDSHAKE_WRITING;
 	client->out_writing = NULL;
 	client->out_queue_head = NULL;
@@ -351,33 +369,34 @@ void game_server_on_accept(void *userdata, i32 connection){
 }
 
 static
-void game_server_on_drop(void *userdata, i32 connection){
-	LOG("%08X", connection);
-	GameServer *gserver = (GameServer*)userdata;
-	Client *client = get_connection_client(gserver, connection);
+void game_on_drop(void *userdata, u32 index){
+	Game *game = (Game*)userdata;
+	Client *client = game_get_client_by_index(game, index);
+	u32 next_counter = client->counter + 1;
 
 	// NOTE: Release any out packet we're using here.
 	ASSERT((client->out_queue_head != NULL && client->out_queue_tail != NULL)
 		|| (client->out_queue_head == NULL && client->out_queue_tail == NULL));
 	if(client->out_writing)
-		release_out_packet(gserver, client->out_writing);
+		release_out_packet(game, client->out_writing);
 	while(client->out_queue_tail){
 		OutPacket *tmp = client->out_queue_tail;
 		client->out_queue_tail = tmp->next;
-		release_out_packet(gserver, tmp);
+		release_out_packet(game, tmp);
 	}
 
 	// NOTE: Zero out client memory for security reasons.
 	memset(client, 0, sizeof(Client));
+	client->counter = next_counter;
 }
 
 static
-void game_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen){
-	GameServer *gserver = (GameServer*)userdata;
-	Client *client = get_connection_client(gserver, connection);
+void game_on_read(void *userdata, u32 index, u8 *data, i32 datalen){
+	Game *game = (Game*)userdata;
+	Client *client = game_get_client_by_index(game, index);
 	switch(client->state){
 		case CLIENT_STATE_HANDSHAKE_READING:{
-			RSA *rsa = gserver->rsa;
+			RSA *rsa = game->rsa;
 
 			if(datalen != 137){
 				disconnect(client);
@@ -422,7 +441,7 @@ void game_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen){
 			client->xtea[3] = packet_read_u32(&p);
 
 			if(version != 860){
-				send_disconnect(gserver, client,
+				send_disconnect(game, client,
 					"This server requires client version 8.60.");
 				return;
 			}
@@ -440,9 +459,9 @@ void game_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen){
 				client->accname, client->password, client->character);
 
 			if(strcmp(client->accname, "account") == 0){
-				send_login(gserver, client);
+				send_login(game, client);
 			}else{
-				send_disconnect(gserver, client,
+				send_disconnect(game, client,
 					"Invalid account.");
 			}
 			break;
@@ -478,9 +497,11 @@ void game_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen){
 
 						u16 client_id = (u16)atoi(say_str);
 						if(client_id >= 100)
-							send_inventory(gserver, client, 0x06, client_id);
+							send_inventory_item(game, client, 0x06, client_id);
+						else if(client_id == 14)
+							send_disconnect(game, client, "test");
 						else if(client_id == 15)
-							send_relogin_window(gserver, client);
+							send_relogin_window(game, client);
 						break;
 					}
 				}
@@ -496,10 +517,10 @@ void game_server_on_read(void *userdata, i32 connection, u8 *data, i32 datalen){
 }
 
 static
-void game_server_request_output(void *userdata,
-		i32 connection, u8 **output, i32 *output_len){
-	GameServer *gserver = (GameServer*)userdata;
-	Client *client = get_connection_client(gserver, connection);
+void game_request_output(void *userdata,
+		u32 index, u8 **output, i32 *output_len){
+	Game *game = (Game*)userdata;
+	Client *client = game_get_client_by_index(game, index);
 	switch(client->state){
 		case CLIENT_STATE_HANDSHAKE_WRITING: {
 			// NOTE: This seems to be some kind of challenge message that
@@ -527,7 +548,7 @@ void game_server_request_output(void *userdata,
 				|| (client->out_queue_head == NULL && client->out_queue_tail == NULL));
 
 			if(client->out_writing){
-				release_out_packet(gserver, client->out_writing);
+				release_out_packet(game, client->out_writing);
 				client->out_writing = NULL;
 			}
 
@@ -558,41 +579,38 @@ void game_server_request_output(void *userdata,
 }
 
 static
-void game_server_request_status(void *userdata, i32 connection, ConnectionStatus *out_status){
-	GameServer *gserver = (GameServer*)userdata;
-	Client *client = get_connection_client(gserver, connection);
+void game_request_status(void *userdata, u32 index, ConnectionStatus *out_status){
+	Game *game = (Game*)userdata;
+	Client *client = game_get_client_by_index(game, index);
 	if(client->state == CLIENT_STATE_DISCONNECTING)
 		*out_status = CONNECTION_STATUS_CLOSING;
 }
 
 // ----------------------------------------------------------------
 
-GameServer *game_server_init(MemArena *arena,
-		RSA *server_rsa, u16 port, u16 max_connections){
+void game_init_server(Game *game, Config *cfg, RSA *game_rsa){
+	u16 port = cfg->game_port;
+	u16 max_connections = cfg->game_max_connections;
 
 	// TODO: We might want a different arena specifically for allocating OutPackets.
-	GameServer *gserver = arena_alloc<GameServer>(arena, 1);
-	gserver->max_clients = max_connections;
-	gserver->clients = arena_alloc<Client>(arena, max_connections);
-	gserver->rsa = server_rsa;
-	gserver->output_arena = arena;
-	gserver->output_head = NULL;
+	MemArena *arena = game->arena;
+
+	game->max_clients = max_connections;
+	game->clients = arena_alloc<Client>(arena, max_connections);
+	game->rsa = game_rsa;
+	game->output_arena = arena;
+	game->output_head = NULL;
 
 	ServerParams server_params;
 	server_params.port = port;
 	server_params.max_connections = max_connections;
 	server_params.readbuf_size = 2048;
-	server_params.on_accept = game_server_on_accept;
-	server_params.on_drop = game_server_on_drop;
-	server_params.on_read = game_server_on_read;
-	server_params.request_output = game_server_request_output;
-	server_params.request_status = game_server_request_status;
-	gserver->server = server_init(arena, &server_params);
-	if(!gserver->server)
+	server_params.on_accept = game_on_accept;
+	server_params.on_drop = game_on_drop;
+	server_params.on_read = game_on_read;
+	server_params.request_output = game_request_output;
+	server_params.request_status = game_request_status;
+	game->server = server_init(arena, &server_params);
+	if(!game->server)
 		PANIC("failed to initialize game server");
-	return gserver;
-}
-
-void game_server_poll(GameServer *gserver){
-	server_poll(gserver->server, gserver);
 }
