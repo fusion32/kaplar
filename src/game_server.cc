@@ -356,6 +356,13 @@ void send_relogin_window(Game *game, Client *client){
 	packet_write_u8(p, 0x28);
 }
 
+static
+void send_cancel_walk(Game *game, Client *client){
+	OutPacket *p = get_out_packet(game, client, 1);
+	packet_write_u8(p, 0xB5);
+	packet_write_u8(p, 0x02); // direction
+}
+
 // ----------------------------------------------------------------
 
 static
@@ -504,6 +511,10 @@ void game_on_read(void *userdata, u32 index, u8 *data, i32 datalen){
 							send_relogin_window(game, client);
 						break;
 					}
+
+					default:
+						send_cancel_walk(game, client);
+						break;
 				}
 			}
 			break;

@@ -59,43 +59,33 @@ struct BaseItem{
 	};
 };
 
-struct Container;
-struct Readable;
+// TODO: An item is basically and ID to the base item and for items that
+// are stackable, have some custom text, have teleport coordinates, is a
+// container, etc... they need some extra piece of state. We gonna stick
+// to the ID for now to get things going but we should keep this in mind.
+// struct Container;
+// struct Teleport;
+// struct Text;
+
 struct Item{
 	u16 id;
-	u16 count_or_subtype;
-	//ItemType type;
-	union{
-		Container *container;
-		Readable *readable;
-	};
 };
 
+// TODO: A tile will most commonly have a ground item and perhaps a border
+// or a wall item. I was thinking of perhaps having an allocator for arrays
+// of items but lets start with a maximum of 4 items and improve from there.
 struct Tile{
-	Item ground;
-
-	// TODO: Most tiles don't have more than 2 items
-	// and a single creature on it. But we still need
-	// to handle cases where they have. Let's use linked
-	// lists for now and we can improve the design later.
 	i32 num_items;
-	Item *items_head;
-	Item *items_tail;
+	Item items[4];
 };
 
 struct World{
-	u16 client_version;
-	u16 client_data_version;
-
 	u16 chunk_dim_x;
 	u16 chunk_dim_y;
 	u8 chunk_dim_z;
-
 	u16 world_dim_in_chunks_x;
 	u16 world_dim_in_chunks_y;
 	u8 world_dim_in_chunks_z;
-
-	u32 max_chunks;
 	u32 num_tiles_per_chunk;
 
 	Tile *dense_array;

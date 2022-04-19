@@ -32,7 +32,7 @@ struct KPB_Element{
 
 static INLINE
 i32 kpb_element_remainder(KPB_Element *elem){
-	return (elem->bufend >= elem->bufpos) ? (elem->bufend - elem->bufpos) : 0;
+	return elem->bufend - elem->bufpos;
 }
 
 static INLINE
@@ -91,17 +91,18 @@ bool kpb_next_element(KPB_Element *parent, KPB_Element *out_elem){
 	ASSERT(out_elem != NULL);
 	if(!kpb_element_can_read(parent, 8))
 		return false;
-	u32 elem_id = kpb_element_read_u32(parent);
-	u32 elem_size = kpb_element_read_u32(parent);
-	if(!kpb_element_can_read(parent, elem_size))
+	u32 elem_id = buffer_read_u32_le(parent->buf + parent->bufpos + 0);
+	u32 elem_size = buffer_read_u32_le(parent->buf + parent->bufpos + 4);
+	if(!kpb_element_can_read(parent, elem_size + 8))
 		return false;
-	u8 *elem_start = parent->buf + parent->bufpos;
-	parent->bufpos += elem_size;
-
-	out_elem->buf = elem_start;
+	out_elem->buf = parent->buf + parent->bufpos + 8;
 	out_elem->bufend = elem_size;
 	out_elem->bufpos = 0;
 	out_elem->elem_id = elem_id;
+	// NOTE: Instead of using kpb_element_read_u32, I wanted to avoid
+	// partial reads so we only update parent->bufpos after verifying
+	// that we can read the whole element.
+	parent->bufpos += elem_size + 8;
 	return true;
 }
 

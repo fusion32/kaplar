@@ -102,9 +102,10 @@ static INLINE T *arena_alloc(MemArena *arena, usize num){
 }
 
 template<typename T>
-static INLINE T *arena_allocz(MemArena *arena, usize num){
+static INLINE T *arena_alloc_init(MemArena *arena, usize num, T initial_value){
 	T *result = arena_alloc<T>(arena, num);
-	memset(result, 0, sizeof(T) * num);
+	for(usize i = 0; i < num; i += 1)
+		result[i] = initial_value;
 	return result;
 }
 

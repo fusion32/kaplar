@@ -203,6 +203,6 @@ int main(int argc, char **argv){
 		"6207862794310902180176810615217550567108238764764442605581471797"
 		"07119674283982419152118103759076030616683978566631413";
 
-	change_ip(&v810, host, port, opentibia_rsa);
+	change_ip(&v860, host, port, opentibia_rsa);
 	return 0;
 }
